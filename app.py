@@ -132,4 +132,4 @@ with gr.Blocks(title="pdf2audio") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(analytics_enabled=False)

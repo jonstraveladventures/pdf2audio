@@ -69,4 +69,8 @@ pdf2audio paper.pdf -o paper.mp3
 2. **Synthesise** — Kokoro generates 24 kHz audio for each text segment. 28 English voices available (American and British, male and female).
 3. **Export** — Segments are concatenated with configurable silence gaps between paragraphs and sections, then exported as MP3 (192 kbps) or WAV.
 
-The first run downloads model weights (~330 MB) automatically from HuggingFace.
+The first run downloads model weights (~330 MB) automatically from HuggingFace. After that, everything runs fully offline — no data leaves your machine.
+
+## License
+
+AGPL-3.0 — required by the PyMuPDF dependency. See [LICENSE](LICENSE) for details.

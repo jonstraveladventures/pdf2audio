@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pdf2audio"
 version = "0.1.0"
 description = "Convert PDF documents to audio narration using local TTS"
+license = "AGPL-3.0-only"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "pymupdf4llm>=0.0.17",
