@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2audio"
+version = "0.1.0"
+description = "Convert PDF documents to audio narration using local TTS"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "pymupdf4llm>=0.0.17",
+    "kokoro>=0.9.4",
+    "soundfile",
+    "pydub",
+    "rich",
+]
+
+[project.scripts]
+pdf2audio = "pdf2audio.cli:main"

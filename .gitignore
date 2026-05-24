@@ -1,0 +1,9 @@
+__pycache__/
+*.egg-info/
+dist/
+build/
+*.mp3
+*.wav
+*.txt
+test.pdf
+.claude/
