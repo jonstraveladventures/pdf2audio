@@ -7,3 +7,4 @@ build/
 *.txt
 test.pdf
 .claude/
+.venv/

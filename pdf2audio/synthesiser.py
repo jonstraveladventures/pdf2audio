@@ -1,12 +1,20 @@
-"""TTS wrapper using Kokoro."""
+"""TTS wrapper using Kokoro: MLX on Apple Silicon, PyTorch elsewhere."""
 
 import os
 import numpy as np
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-from kokoro import KPipeline
+try:
+    from mlx_audio.tts.utils import load_model as _load_mlx_model
 
+    BACKEND = "mlx"
+except ImportError:
+    from kokoro import KPipeline
+
+    BACKEND = "pytorch"
+
+MLX_MODEL = "mlx-community/Kokoro-82M-bf16"
 SAMPLE_RATE = 24000
 
 VOICES = {
@@ -71,7 +79,22 @@ class Synthesiser:
     def __init__(self, voice="af_heart", speed=1.0):
         self.voice = voice
         self.speed = speed
-        self.pipeline = KPipeline(lang_code=_lang_code_for(voice))
+        self.lang_code = _lang_code_for(voice)
+        if BACKEND == "mlx":
+            self.model = _load_mlx_model(MLX_MODEL)
+        else:
+            self.pipeline = KPipeline(lang_code=self.lang_code)
+
+    def _generate(self, text):
+        if BACKEND == "mlx":
+            for result in self.model.generate(
+                text=text, voice=self.voice, speed=self.speed,
+                lang_code=self.lang_code, split_pattern=r"\n+",
+            ):
+                yield result.audio
+        else:
+            for _gs, _ps, audio in self.pipeline(text, voice=self.voice, speed=self.speed, split_pattern=r"\n+"):
+                yield audio
 
     def synthesise(self, text):
         """Synthesise text to audio. Returns a float32 numpy array at 24 kHz."""
@@ -79,7 +102,7 @@ class Synthesiser:
             return np.array([], dtype=np.float32)
 
         chunks = []
-        for _gs, _ps, audio in self.pipeline(text, voice=self.voice, speed=self.speed, split_pattern=r"\n+"):
+        for audio in self._generate(text):
             if audio is None:
                 continue
             if hasattr(audio, "cpu"):
