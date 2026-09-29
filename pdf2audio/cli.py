@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from pdf2audio.extractor import extract_and_clean
+from pdf2audio.equations import DEFAULT_MODEL
 from pdf2audio.synthesiser import Synthesiser, VOICES
 from pdf2audio.audio import numpy_to_segment, concatenate_segments, export_audio
 
@@ -26,7 +27,9 @@ def build_parser():
     p.add_argument("--speed", type=float, default=1.0, help="Speed multiplier (default: 1.0)")
     p.add_argument("--list-voices", action="store_true", help="List available voices and exit")
     p.add_argument("--keep-references", action="store_true", help="Keep bibliography section (stripped by default)")
-    p.add_argument("--skip-equations", action="store_true", help="Remove equations entirely (default: replace with 'equation')")
+    p.add_argument("--skip-equations", action="store_true", help="Remove equations entirely (default: say the equation's number)")
+    p.add_argument("--explain-equations", action="store_true", help="Replace each display equation with a spoken explanation from a local model (needs Ollama)")
+    p.add_argument("--llm-model", default=DEFAULT_MODEL, help=f"Ollama vision model for --explain-equations (default: {DEFAULT_MODEL})")
     p.add_argument("--skip-captions", action="store_true", help="Remove figure/table captions")
     p.add_argument("--keep-footnotes", action="store_true", help="Include footnotes inline (skipped by default)")
     p.add_argument("--output-text", action="store_true", help="Save cleaned text to a .txt file")
@@ -67,15 +70,45 @@ def main():
     console.print(f"\n[bold]Processing:[/bold] {input_path.name}")
     console.print("[dim]Extracting text from PDF...[/dim]")
 
-    segments, cleaned_text = extract_and_clean(
-        str(input_path),
-        start_page=args.start_page,
-        end_page=args.end_page,
-        skip_references=not args.keep_references,
-        skip_equations=args.skip_equations,
-        skip_captions=args.skip_captions,
-        keep_footnotes=args.keep_footnotes,
-    )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} pages"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        eq_task = None
+
+        def on_equation_page(done, total, explained, n_equations):
+            nonlocal eq_task
+            if eq_task is None:
+                eq_task = progress.add_task(f"Explaining equations ({args.llm_model})", total=total)
+            progress.update(eq_task, completed=done)
+            on_equation_page.summary = (explained, n_equations)
+
+        on_equation_page.summary = None
+        try:
+            segments, cleaned_text = extract_and_clean(
+                str(input_path),
+                start_page=args.start_page,
+                end_page=args.end_page,
+                skip_references=not args.keep_references,
+                skip_equations=args.skip_equations,
+                skip_captions=args.skip_captions,
+                keep_footnotes=args.keep_footnotes,
+                explain_equations=args.explain_equations,
+                llm_model=args.llm_model,
+                on_equation_page=on_equation_page,
+            )
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if on_equation_page.summary:
+        explained, n_equations = on_equation_page.summary
+        console.print(f"  Explained {explained} of {n_equations} equations")
 
     if not segments:
         console.print("[red]Error:[/red] no text extracted from PDF")

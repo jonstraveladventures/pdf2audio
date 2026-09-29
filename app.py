@@ -24,6 +24,7 @@ def convert(
     end_page,
     skip_references,
     skip_equations,
+    explain_equations,
     skip_captions,
     keep_footnotes,
     output_format,
@@ -39,15 +40,23 @@ def convert(
     end_pg = None if end_page >= 999 else int(end_page)
     start_pg = int(start_page)
 
-    segments, cleaned_text = extract_and_clean(
-        pdf_path,
-        start_page=start_pg,
-        end_page=end_pg,
-        skip_references=skip_references,
-        skip_equations=skip_equations,
-        skip_captions=skip_captions,
-        keep_footnotes=keep_footnotes,
-    )
+    def on_equation_page(done, total, explained, n_equations):
+        progress(done / total, desc=f"Explaining equations: page {done} of {total}")
+
+    try:
+        segments, cleaned_text = extract_and_clean(
+            pdf_path,
+            start_page=start_pg,
+            end_page=end_pg,
+            skip_references=skip_references,
+            skip_equations=skip_equations,
+            skip_captions=skip_captions,
+            keep_footnotes=keep_footnotes,
+            explain_equations=explain_equations,
+            on_equation_page=on_equation_page,
+        )
+    except RuntimeError as e:
+        raise gr.Error(str(e))
 
     if not segments:
         raise gr.Error("No text could be extracted from the PDF.")
@@ -111,6 +120,7 @@ with gr.Blocks(title="pdf2audio") as demo:
             with gr.Row():
                 skip_refs = gr.Checkbox(value=True, label="Skip references")
                 skip_eqs = gr.Checkbox(value=False, label="Skip equations")
+                explain_eqs = gr.Checkbox(value=False, label="Explain equations (local model, slower)")
             with gr.Row():
                 skip_caps = gr.Checkbox(value=False, label="Skip captions")
                 keep_fn = gr.Checkbox(value=False, label="Keep footnotes")
@@ -127,7 +137,7 @@ with gr.Blocks(title="pdf2audio") as demo:
 
     convert_btn.click(
         fn=convert,
-        inputs=[pdf_input, voice, speed, start_page, end_page, skip_refs, skip_eqs, skip_caps, keep_fn, fmt],
+        inputs=[pdf_input, voice, speed, start_page, end_page, skip_refs, skip_eqs, explain_eqs, skip_caps, keep_fn, fmt],
         outputs=[audio_out, file_out, text_out, status_box],
     )
 
