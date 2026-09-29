@@ -41,7 +41,7 @@ def convert(
     end_pg = None if end_page >= 999 else int(end_page)
     start_pg = int(start_page)
 
-    def on_equation_page(done, total, explained, n_equations):
+    def on_equation_page(done, total, explained, n_equations, corrected=0, unchecked=0):
         progress(done / total, desc=f"Explaining equations: page {done} of {total}")
 
     try:

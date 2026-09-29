@@ -30,6 +30,7 @@ def build_parser():
     p.add_argument("--no-appendices", action="store_true", help="Stop at the first appendix")
     p.add_argument("--skip-equations", action="store_true", help="Remove equations entirely (default: say the equation's number)")
     p.add_argument("--explain-equations", action="store_true", help="Replace each display equation with a spoken explanation from a local model (needs Ollama)")
+    p.add_argument("--check-equations", action="store_true", help="With --explain-equations, have the model check each explanation against the equation and correct it (about doubles the time)")
     p.add_argument("--llm-model", default=DEFAULT_MODEL, help=f"Ollama vision model for --explain-equations (default: {DEFAULT_MODEL})")
     p.add_argument("--skip-captions", action="store_true", help="Remove figure/table captions")
     p.add_argument("--keep-footnotes", action="store_true", help="Include footnotes inline (skipped by default)")
@@ -82,12 +83,12 @@ def main():
     ) as progress:
         eq_task = None
 
-        def on_equation_page(done, total, explained, n_equations):
+        def on_equation_page(done, total, explained, n_equations, corrected=0, unchecked=0):
             nonlocal eq_task
             if eq_task is None:
                 eq_task = progress.add_task(f"Explaining equations ({args.llm_model})", total=total)
             progress.update(eq_task, completed=done)
-            on_equation_page.summary = (explained, n_equations)
+            on_equation_page.summary = (explained, n_equations, corrected, unchecked)
 
         on_equation_page.summary = None
         try:
@@ -103,14 +104,17 @@ def main():
                 llm_model=args.llm_model,
                 on_equation_page=on_equation_page,
                 skip_appendices=args.no_appendices,
+                check_equations=args.check_equations,
             )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
     if on_equation_page.summary:
-        explained, n_equations = on_equation_page.summary
+        explained, n_equations, corrected, unchecked = on_equation_page.summary
         console.print(f"  Explained {explained} of {n_equations} equations")
+        if args.check_equations:
+            console.print(f"  The check corrected {corrected} explanations; {unchecked} pages could not be checked")
 
     if not segments:
         console.print("[red]Error:[/red] no text extracted from PDF")

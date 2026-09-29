@@ -49,6 +49,7 @@ pdf2audio paper.pdf -o paper.mp3
 | `--no-appendices` | off | Stop at the first appendix |
 | `--skip-equations` | off | Remove equations entirely (by default each is announced by its number, "Equation 3.6") |
 | `--explain-equations` | off | Replace each display equation with a spoken explanation from a local vision model (see below) |
+| `--check-equations` | off | With `--explain-equations`, have the model check each explanation against the equation and correct it (about doubles the time) |
 | `--llm-model NAME` | `qwen3.5:35b-a3b` | Ollama model used by `--explain-equations` |
 | `--skip-captions` | off | Remove figure/table captions |
 | `--keep-footnotes` | off | Include footnotes inline |

@@ -342,7 +342,9 @@ def _chat(model, prompt, image, timeout):
         "messages": [{"role": "user", "content": prompt, "images": [image]}],
         "stream": False,
         "think": True,
-        "options": {"temperature": 0.6, "num_ctx": 16384, "num_predict": 8192},
+        # The model thinks before answering; checking a dense page can take 20,000 tokens
+        # of thought, and a reply cut off at the limit has no answer in it.
+        "options": {"temperature": 0.6, "num_ctx": 32768, "num_predict": 24576},
     }
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/chat", json.dumps(body).encode(), {"Content-Type": "application/json"}
@@ -362,17 +364,42 @@ def check_model(model):
         raise RuntimeError(f"Ollama has no model '{model}'. Pull it with `ollama pull {model}`.")
 
 
-def explain_page(doc, page_no, equations, model=DEFAULT_MODEL, timeout=600):
-    """Ask the model to explain one page's equations. Returns {equation id: text}."""
+CHECK_PROMPT = """You are checking spoken explanations of equations before they are read \
+to a listener who cannot see the page.
+
+The image is one page of a paper. {where}{glossary}
+
+Below is the explanation written for each labelled equation. Check each one against the \
+equation in the image, term by term: every sign; which quantity is subtracted from, divided \
+by or compared with which; what is squared, inverted, summed, integrated or evaluated where; \
+and whether each quantity is named as the paper names it. Do not rewrite an explanation for \
+style.
+
+For each label, reply "OK" if its explanation is correct. If anything in it is wrong, reply \
+with a corrected explanation that keeps to the same rules: one to three plain sentences for a \
+speech synthesiser, no symbols or LaTeX, grouping made audible ("the square of one minus two \
+epsilon"), only what the equation states, and not beginning with "Equation N" or "This \
+equation".
+
+Explanations:
+{explanations}
+
+Reply with only a JSON object mapping each label to "OK" or to its corrected explanation."""
+
+
+def _glossary(equations):
     glossary = equations[0].context if equations else ""
-    if glossary:
-        glossary = (
-            "\n\nThe paper names some of the symbols in these equations as follows. Use these "
-            "names, but papers reuse symbols between sections, so if the page itself gives a "
-            "symbol another meaning, follow the page:\n" + glossary
-        )
-    prompt = PROMPT.format(where=_describe_labels(equations), glossary=glossary)
-    image = _labelled_page_png(doc, page_no, equations)
+    if not glossary:
+        return ""
+    return (
+        "\n\nThe paper names some of the symbols in these equations as follows. Use these "
+        "names, but papers reuse symbols between sections, so if the page itself gives a "
+        "symbol another meaning, follow the page:\n" + glossary
+    )
+
+
+def _ask(model, prompt, image, timeout):
+    """Send a page prompt and return the JSON object in the reply, or None. Tries twice."""
     for _attempt in range(2):
         try:
             reply = _chat(model, prompt, image, timeout)
@@ -384,13 +411,44 @@ def explain_page(doc, page_no, equations, model=DEFAULT_MODEL, timeout=600):
         except json.JSONDecodeError:
             answers = None
         if isinstance(answers, dict):
-            out = {}
-            for n, eq in enumerate(equations, 1):
-                text = str(answers.get(f"E{n}", "")).strip()
-                if text:
-                    out[eq.id] = text
-            return out
-    return {}
+            return answers
+    return None
+
+
+def explain_page(doc, page_no, equations, model=DEFAULT_MODEL, timeout=900):
+    """Ask the model to explain one page's equations. Returns {equation id: text}."""
+    prompt = PROMPT.format(where=_describe_labels(equations), glossary=_glossary(equations))
+    answers = _ask(model, prompt, _labelled_page_png(doc, page_no, equations), timeout) or {}
+    out = {}
+    for n, eq in enumerate(equations, 1):
+        text = str(answers.get(f"E{n}", "")).strip()
+        if text:
+            out[eq.id] = text
+    return out
+
+
+def check_page(doc, page_no, equations, explanations, model=DEFAULT_MODEL, timeout=900):
+    """Have the model check one page's explanations against the equations and correct
+    any that are wrong. Returns ({equation id: text}, [ids it corrected], completed),
+    where completed is False if the model gave no usable answer."""
+    labelled = {f"E{n}": explanations[eq.id] for n, eq in enumerate(equations, 1) if eq.id in explanations}
+    if not labelled:
+        return dict(explanations), [], True
+    prompt = CHECK_PROMPT.format(
+        where=_describe_labels(equations),
+        glossary=_glossary(equations),
+        explanations=json.dumps(labelled, indent=1, ensure_ascii=False),
+    )
+    answers = _ask(model, prompt, _labelled_page_png(doc, page_no, equations), timeout)
+    if answers is None:
+        return dict(explanations), [], False
+    checked, corrected = dict(explanations), []
+    for n, eq in enumerate(equations, 1):
+        verdict = str(answers.get(f"E{n}", "")).strip()
+        if eq.id in explanations and verdict and verdict.strip(" .\"'").upper() != "OK":
+            checked[eq.id] = verdict
+            corrected.append(eq.id)
+    return checked, corrected, True
 
 
 def substitute(text, equations, explanations=None, skip=False):

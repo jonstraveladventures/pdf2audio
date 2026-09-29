@@ -317,13 +317,16 @@ def extract_and_clean(
     llm_model=equations.DEFAULT_MODEL,
     on_equation_page=None,
     skip_appendices=False,
+    check_equations=False,
 ):
     """Extract and clean a PDF for narration.
 
     Display equations are replaced by their number ("Equation 3.6."), or with
-    explain_equations by a spoken explanation from a local model. on_equation_page,
-    if given, is called as on_equation_page(pages_done, pages_total, explained, total)
-    while explanations are generated.
+    explain_equations by a spoken explanation from a local model; check_equations adds
+    a second pass in which the model checks each explanation against the equation and
+    corrects it. on_equation_page, if given, is called as
+    on_equation_page(pages_done, pages_total, explained, total, corrected, unchecked)
+    while explanations are generated, unchecked counting pages the check could not finish.
     """
     md, eqs = extract_pdf(pdf_path, start_page, end_page)
     cleaned = clean_text(
@@ -345,10 +348,16 @@ def extract_and_clean(
         if by_page:
             equations.check_model(llm_model)
             doc = pymupdf.open(pdf_path)
+            corrected = unchecked = 0
             for done, (page_no, page_eqs) in enumerate(sorted(by_page.items()), 1):
-                explanations.update(equations.explain_page(doc, page_no, page_eqs, llm_model))
+                got = equations.explain_page(doc, page_no, page_eqs, llm_model)
+                if check_equations and got:
+                    got, fixed, completed = equations.check_page(doc, page_no, page_eqs, got, llm_model)
+                    corrected += len(fixed)
+                    unchecked += not completed
+                explanations.update(got)
                 if on_equation_page:
-                    on_equation_page(done, len(by_page), len(explanations), len(live))
+                    on_equation_page(done, len(by_page), len(explanations), len(live), corrected, unchecked)
             doc.close()
 
     cleaned = equations.substitute(cleaned, eqs, explanations, skip=skip_equations)
