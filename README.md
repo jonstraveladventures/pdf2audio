@@ -61,6 +61,23 @@ pdf2audio paper.pdf -o paper.mp3
 | `--section-pause MS` | `1500` | Silence between sections (ms) |
 | `--list-voices` | | Print available voices and exit |
 
+## Short text: `tts`
+
+The package also installs `tts`, which turns short text into an audio file, for example
+voice prompts for an app. Kokoro-82M's weights and its text front end are Apache-2.0, so
+the audio can ship.
+
+```bash
+tts "Welcome back." -o assets/welcome.wav
+echo "Timer finished." | tts -o done.m4a --voice bm_george
+tts --batch prompts.json --out-dir assets/audio --format wav
+```
+
+The output format follows the extension (`wav`, `flac`, `mp3`, `m4a`, `ogg` as Opus).
+Leading and trailing silence is trimmed unless `--no-trim` is given; `--rate 48000`
+resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
+`{"id", "text", "voice"}` or an `{id: text}` object) or CSV with `id` and `text` columns.
+
 ## Requirements
 
 - macOS with Apple Silicon (M1 or later). Other platforms fall back to the PyTorch build of Kokoro.

@@ -21,3 +21,4 @@ dependencies = [
 
 [project.scripts]
 pdf2audio = "pdf2audio.cli:main"
+tts = "pdf2audio.speak:main"
