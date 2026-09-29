@@ -68,7 +68,7 @@ pdf2audio paper.pdf -o paper.mp3
 
 ## How it works
 
-1. **Extract** — `pymupdf4llm` converts PDF pages to markdown, then regex-based cleaning strips headers, footers, page numbers, review-draft line numbers, figure axis labels, equations, references, and other non-narration content.
+1. **Extract** — `pymupdf4llm` converts PDF pages to markdown, then regex-based cleaning strips headers, footers, page numbers, review-draft line numbers, figure axis labels, references (keeping any appendices), and other non-narration content. Each table is replaced by the words "Table omitted."; its caption is kept.
 2. **Synthesise** — Kokoro generates 24 kHz audio for each text segment, on the GPU via MLX on Apple Silicon (about 50× real time on an M5 Max) and via PyTorch elsewhere. 28 English voices available (American and British, male and female).
 3. **Explain equations** (optional) — each page with display equations is rendered with the equations outlined and sent to a local vision model through Ollama, which writes a short spoken explanation of each. The narration then says, for example, "Equation 3.6, in words: …". On an M5 Max this adds roughly 20 to 110 seconds per page with equations.
 4. **Export** — Segments are concatenated with configurable silence gaps between paragraphs and sections, then exported as MP3 (192 kbps) or WAV.

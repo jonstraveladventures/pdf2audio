@@ -42,7 +42,10 @@ equation's role, such as "this defines the ansatz": say what it contains.
 
 Do not read the equation aloud term by term, and do not spell out symbols or subscripts \
 ("U sub h comma one", "script Q", "d times G"): a listener cannot hold that. Explain what the \
-equation means, mentioning a specific number or factor only when it matters. Your text will be \
+equation means, mentioning a specific number or factor only when it matters. Say only what \
+the equation states and what its quantities mean: do not add claims about its significance, \
+its consequences or where it is used, even when the surrounding text makes them, because the \
+listener will hear that text anyway. Your text will be \
 read by a speech synthesiser, so use no LaTeX and no symbols. Do not begin with "Equation N" or \
 "This equation": start directly with what it says. If you are not sure what a quantity means \
 or how the terms combine, say less rather than guess.
@@ -169,11 +172,13 @@ def _leaked_equations(text, tags):
     return found
 
 
-def mark_page(chunk, page, next_id):
-    """Insert markers into one page chunk's text. Returns (new_text, equations)."""
+def mark_page(chunk, page, next_id, extra_edits=()):
+    """Insert markers into one page chunk's text, along with any other (start, end,
+    replacement) edits the caller needs made at the same positions. Returns
+    (new_text, equations)."""
     text = chunk["text"]
     boxes = chunk.get("page_boxes", [])
-    edits, equations, covered = [], [], set()
+    edits, equations, covered = list(extra_edits), [], set()
     edges = _column_edges(page)
 
     for box in boxes:
@@ -298,7 +303,10 @@ def substitute(text, equations, explanations=None, skip=False):
         if eq is None or skip:
             return ""
         if eq.id in explanations:
-            return f"{eq.lead_in()} {explanations[eq.id]}"
+            # The model sometimes writes "chi_Phi" or "r_h"; the synthesiser would read
+            # the marks, and explanations do not pass through the text cleaner.
+            spoken = " ".join(re.sub(r"[_^\\$]", " ", explanations[eq.id]).split())
+            return f"{eq.lead_in()} {spoken}"
         return eq.placeholder()
 
     return MARKER_RE.sub(repl, text)

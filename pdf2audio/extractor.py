@@ -16,49 +16,95 @@ class TextSegment:
     heading_level: int = 0
 
 
+TABLE_OMITTED = "Table omitted."
+
+
+def _blank_missed_tables(page):
+    """Replace tables the layout model misses with the words "Table omitted.", in the
+    in-memory document. find_tables also fires on boxed banners and diagrams, so a hit
+    counts only with two or more rows and columns, mostly filled cells, and some numbers."""
+    rects = []
+    for table in page.find_tables().tables:
+        cells = [str(c).strip() for row in table.extract() for c in row if c is not None]
+        filled = [c for c in cells if c]
+        numbers = re.findall(r"\d+(?:\.\d+)?", " ".join(filled))
+        if table.row_count >= 2 and table.col_count >= 2 and len(filled) >= 0.5 * len(cells) and len(numbers) >= 3:
+            rects.append(pymupdf.Rect(table.bbox))
+    if not rects:
+        return
+    for r in rects:
+        page.add_redact_annot(r)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
+    for r in rects:
+        page.insert_text((r.x0, r.y0 + 10), TABLE_OMITTED, fontsize=9)
+
+
 def extract_pdf(pdf_path, start_page=None, end_page=None):
     """Return the document as markdown, with a marker where each display equation
-    stood, and the list of equations marked."""
+    stood and "Table omitted." for each table, and the list of equations marked."""
     doc = pymupdf.open(pdf_path)
-    kwargs = {}
-    if start_page is not None or end_page is not None:
-        start = (start_page or 1) - 1
-        end = (end_page or len(doc))
-        kwargs["pages"] = list(range(start, end))
+    start = (start_page or 1) - 1
+    end = end_page or len(doc)
+    for page_no in range(start, end):
+        _blank_missed_tables(doc[page_no])
 
     parts, found = [], []
-    for chunk in pymupdf4llm.to_markdown(doc, page_chunks=True, **kwargs):
+    for chunk in pymupdf4llm.to_markdown(doc, page_chunks=True, pages=list(range(start, end))):
         page = doc[chunk["metadata"]["page_number"] - 1]
-        text, page_eqs = equations.mark_page(chunk, page, next_id=len(found))
+        tables = [
+            (*box["pos"], f"\n\n{TABLE_OMITTED}\n\n")
+            for box in chunk.get("page_boxes", [])
+            if box["class"] == "table"
+        ]
+        text, page_eqs = equations.mark_page(chunk, page, next_id=len(found), extra_edits=tables)
         parts.append(text)
         found += page_eqs
     doc.close()
     return "".join(parts), found
 
 
+_REFERENCE_WORDS = r"(?:References|Bibliography|Works\s+Cited|Literature\s+Cited)"
+
+# An appendix heading, as a markdown heading ("# A. Proofs", "## Appendix B") or, where
+# the layout model has run it into the text, in capitals ("A STATE REPRESENTATIONS AND").
+_APPENDIX = re.compile(
+    r"^#{1,6}\s*(?:\*\*)?(?:Appendix\b|[A-H](?:\.\d+)*\.?\s)"
+    r"|(?<![\w,])(?:Appendix\s+)?[A-H]\.?\s+[A-Z][A-Z-]{2,}(?:\s+[A-Z&][A-Z-]*)+\b",
+    re.MULTILINE,
+)
+
+
+# A table or figure caption; manuscripts often put these after the references.
+_CAPTION = re.compile(r"^(?:\*\*)?(?:Table|Figure|Fig\.)\s*\d+", re.MULTILINE)
+
+
 def _strip_references(md):
-    """Remove references/bibliography section and everything after it."""
-    heading_pattern = re.compile(
-        r"^(#{1,3})\s*(?:References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*$",
-        re.MULTILINE | re.IGNORECASE,
-    )
-    m = heading_pattern.search(md)
+    """Remove the references section, keeping any appendices, tables and figure
+    captions that follow it."""
+    m = re.search(rf"^(#{{1,6}})\s*(?:\*\*)?{_REFERENCE_WORDS}(?:\*\*)?\s*$", md, re.MULTILINE | re.IGNORECASE)
     if m:
         level = len(m.group(1))
-        rest = md[m.end() :]
-        next_heading = re.search(rf"^#{{1,{level}}}\s+\S", rest, re.MULTILINE)
-        return md[: m.start()] + (rest[next_heading.start() :] if next_heading else "")
+        ends = [
+            e.start()
+            for e in (
+                re.compile(rf"^#{{1,{level}}}\s+\S", re.MULTILINE).search(md, m.end()),
+                _CAPTION.search(md, m.end()),
+            )
+            if e
+        ]
+        return md[: m.start()] + ("\n\n" + md[min(ends) :] if ends else "")
 
-    # Try bold-text or plain-text patterns (common in two-column papers)
-    for pattern in [
-        r"^\*{2}(?:References|Bibliography|Works\s+Cited)\*{2}\s*$",
-        r"^(?:References|Bibliography|REFERENCES|BIBLIOGRAPHY)\s*$",
-    ]:
-        m = re.search(pattern, md, re.MULTILINE | re.IGNORECASE)
-        if m:
-            return md[: m.start()]
-
-    return md
+    # A bold or plain line, or, where the layout model has merged the page into one
+    # block, "REFERENCES" mid-paragraph followed by entries with years.
+    m = re.search(rf"^(?:\*\*)?{_REFERENCE_WORDS}(?:\*\*)?\s*$", md, re.MULTILINE | re.IGNORECASE)
+    if not m:
+        for m in re.finditer(r"\b(?:REFERENCES|BIBLIOGRAPHY)\b", md):
+            if len(re.findall(r"\b(?:19|20)\d{2}\b", md[m.end() : m.end() + 800])) >= 3:
+                break
+        else:
+            return md
+    ends = [e.start() for e in (_APPENDIX.search(md, m.end()), _CAPTION.search(md, m.end())) if e]
+    return md[: m.start()] + ("\n\n" + md[min(ends) :] if ends else "")
 
 
 # Review-draft margin numbers (ICLR/NeurIPS style), which pymupdf4llm emits in
@@ -144,6 +190,10 @@ def clean_text(
     skip_captions=False,
     keep_footnotes=False,
 ):
+    # The table placeholder can pick up heading markup from the text around it; it must
+    # not end a section or be read as a heading.
+    md = re.sub(rf"(?m)^#*\s*(?:\*\*|<u>)*{re.escape(TABLE_OMITTED)}(?:\*\*|</u>)*", TABLE_OMITTED, md)
+
     line_numbers = _has_line_numbers(md)
     if line_numbers:
         md = _strip_line_numbers(md)
