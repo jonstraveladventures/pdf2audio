@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import pymupdf
 import pymupdf4llm
 
-from pdf2audio import equations
+from pdf2audio import equations, fallback
 
 
 @dataclass
@@ -48,18 +48,22 @@ def extract_pdf(pdf_path, start_page=None, end_page=None):
     for page_no in range(start, end):
         _blank_missed_tables(doc[page_no])
 
-    parts, found = [], []
+    parts, found, page_definitions = [], [], {}
     for chunk in pymupdf4llm.to_markdown(doc, page_chunks=True, pages=list(range(start, end))):
         page = doc[chunk["metadata"]["page_number"] - 1]
+        if fallback.layout_failed(chunk):
+            chunk = fallback.rebuild(chunk, page)
         tables = [
             (*box["pos"], f"\n\n{TABLE_OMITTED}\n\n")
             for box in chunk.get("page_boxes", [])
             if box["class"] == "table"
         ]
+        page_definitions[page.number] = equations.definitions(chunk["text"])
         text, page_eqs = equations.mark_page(chunk, page, next_id=len(found), extra_edits=tables)
         parts.append(text)
         found += page_eqs
     doc.close()
+    equations.attach_glossaries(found, page_definitions)
     return "".join(parts), found
 
 
@@ -312,6 +316,7 @@ def extract_and_clean(
     explain_equations=False,
     llm_model=equations.DEFAULT_MODEL,
     on_equation_page=None,
+    skip_appendices=False,
 ):
     """Extract and clean a PDF for narration.
 
@@ -324,6 +329,11 @@ def extract_and_clean(
     cleaned = clean_text(
         md, skip_references, skip_equations, skip_captions, keep_footnotes
     )
+    if skip_appendices:
+        # Before explaining equations, so none is spent on the appendices.
+        appendix = _APPENDIX.search(cleaned)
+        if appendix:
+            cleaned = cleaned[: appendix.start()]
 
     explanations = {}
     if explain_equations and not skip_equations:

@@ -25,6 +25,7 @@ def convert(
     skip_references,
     skip_equations,
     explain_equations,
+    skip_appendices,
     skip_captions,
     keep_footnotes,
     output_format,
@@ -54,6 +55,7 @@ def convert(
             keep_footnotes=keep_footnotes,
             explain_equations=explain_equations,
             on_equation_page=on_equation_page,
+            skip_appendices=skip_appendices,
         )
     except RuntimeError as e:
         raise gr.Error(str(e))
@@ -122,6 +124,8 @@ with gr.Blocks(title="pdf2audio") as demo:
                 skip_eqs = gr.Checkbox(value=False, label="Skip equations")
                 explain_eqs = gr.Checkbox(value=False, label="Explain equations (local model, slower)")
             with gr.Row():
+                skip_appx = gr.Checkbox(value=False, label="Skip appendices")
+            with gr.Row():
                 skip_caps = gr.Checkbox(value=False, label="Skip captions")
                 keep_fn = gr.Checkbox(value=False, label="Keep footnotes")
 
@@ -137,7 +141,7 @@ with gr.Blocks(title="pdf2audio") as demo:
 
     convert_btn.click(
         fn=convert,
-        inputs=[pdf_input, voice, speed, start_page, end_page, skip_refs, skip_eqs, explain_eqs, skip_caps, keep_fn, fmt],
+        inputs=[pdf_input, voice, speed, start_page, end_page, skip_refs, skip_eqs, explain_eqs, skip_appx, skip_caps, keep_fn, fmt],
         outputs=[audio_out, file_out, text_out, status_box],
     )
 

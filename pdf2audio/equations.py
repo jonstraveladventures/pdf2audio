@@ -30,7 +30,7 @@ _TAG = r"\(((?:[A-Z]\.)?\d{1,3}(?:\.\d{1,3})*[a-z]?)\)"
 PROMPT = """You are preparing an academic paper to be listened to as audio. A listener \
 cannot see the equations, so each one will be replaced by a short spoken explanation.
 
-The image is one page of the paper. {where}
+The image is one page of the paper. {where}{glossary}
 
 For each equation, write one to three plain sentences that say what the equation actually \
 states: which quantity equals, depends on or is bounded by which others, and how (for \
@@ -41,7 +41,9 @@ context: "the temperature", "the charge density", "the horizon radius". A bare l
 equation's role, such as "this defines the ansatz": say what it contains.
 
 Do not read the equation aloud term by term, and do not spell out symbols or subscripts \
-("U sub h comma one", "script Q", "d times G"): a listener cannot hold that. Explain what the \
+("U sub h comma one", "script Q", "d times G"): a listener cannot hold that. When a power or \
+factor applies to a group, make the grouping audible: "the square of one minus two epsilon", \
+not "one minus two epsilon squared". Explain what the \
 equation means, mentioning a specific number or factor only when it matters. Say only what \
 the equation states and what its quantities mean: do not add claims about its significance, \
 its consequences or where it is used, even when the surrounding text makes them, because the \
@@ -60,6 +62,8 @@ class Equation:
     page: int  # 0-based page number in the document
     numbers: list = field(default_factory=list)  # printed equation numbers, e.g. ["3.6"]
     bbox: tuple = None  # formula box on the page; None for equations recovered from text
+    symbols: set = field(default_factory=set)  # maths symbols the equation uses
+    context: str = ""  # the paper's definitions of those symbols, for the model
 
     def lead_in(self):
         if not self.numbers:
@@ -166,10 +170,97 @@ def _leaked_equations(text, tags):
     for m in re.finditer(_TAG, text):
         if m.group(1) not in tags:
             continue
+        # A citation follows a word ("Condition (2.25) is", "in (A.5)"); a display tag
+        # follows maths. Cutting at a citation would delete the prose before it.
+        before = re.search(r"(\S+)\s*$", text[: m.start()])
+        if before and re.fullmatch(r"\(?[A-Za-z][A-Za-z.]+[,;:]?", before.group(1)):
+            continue
         start = _equation_start(text, m.start())
         if re.search(r"[=<>≤≥∝≈]|_[^_\s][^_]*_", text[start : m.start()]):
             found.append((start, _equation_end(text, m.end()), m.group(1)))
     return found
+
+
+_GREEK = "αβγδεϵζηθϑικλμµνξπϖρϱσςτυφϕχψωΓΔΘΛΞΠΣΥΦΨΩ"
+# A symbol as pymupdf4llm writes it: italic ("_Q_", "_rh_") or a Greek letter, with an
+# optional superscript.
+_SYM = rf"(?:_[^_\n]{{1,8}}_|[{_GREEK}])(?:<sup>[^<]{{0,6}}</sup>)?"
+_MEANING_END = r"(?=\s*(?:,|\.|;|:|\(|\)| and | with | where | which | that |$))"
+# "Φ is the anisotropisation density", "µ denotes the chemical potential"
+_SYMBOL_IS = re.compile(
+    rf"({_SYM})\s+(?:is|are|denotes|stands for|represents)\s+((?:the|an?)\s+[^,.;:()]{{3,60}}?){_MEANING_END}"
+)
+# "the charge density Q", "the anisotropy parameter a"
+_NAMED_SYMBOL = re.compile(
+    rf"\b(?:the|an?)\s+((?:[a-z][a-z-]*\s+){{0,4}}[a-z][a-z-]{{2,}})\s+({_SYM})"
+    r"(?=\s*(?:,|\.|;|:|\)|∈|=|<|>|≤|≥| and | with | where | which | that | is | are |$))"
+)
+
+
+def _symbols_in_markdown(text):
+    """Maths symbols in pymupdf4llm markdown: Greek letters anywhere, and short tokens
+    inside italics ("_V_", "_rh_"), since maths is italicised and prose words are not."""
+    found = set(re.findall(f"[{_GREEK}]", text))
+    for span in re.findall(r"_([^_\n]+)_", text):
+        found.update(re.findall(r"\b[A-Za-z][A-Za-z0-9]{0,2}\b", span))
+    return found
+
+
+def _symbols_in_box(page, bbox):
+    """Maths symbols in a formula box's text layer: Greek letters and single letters."""
+    text = page.get_text("text", clip=pymupdf.Rect(bbox))
+    return set(re.findall(f"[{_GREEK}]", text)) | set(re.findall(r"\b[A-Za-z]\b", text))
+
+
+def _unmark(markdown):
+    return " ".join(re.sub(r"</?(?:sup|sub|u)>|[_*]", "", markdown).split())
+
+
+# Words that show a "the ... X" phrase is not a name for X: prepositions ("the expansion
+# in small a"), conjunctions and verbs ("the corrections cancel and b").
+_NOT_A_NAME = re.compile(
+    r"\b(?:in|of|at|on|for|along|with|to|from|by|over|under|between|after|before|per|across|"
+    r"within|into|through|about|than|against|and|or|but|if|then|as|so|when|while|thus|hence|"
+    r"is|are|was|were|be|been|cancel|cancels|gives|becomes)\b"
+)
+
+
+def definitions(text):
+    """Symbol definitions stated in a page's markdown: [(symbol, meaning)]."""
+    text = re.sub(r"\*\*\d{3,4}(?:\s+\d{3,4})*\*\*", " ", text)  # review-draft line numbers
+    found = [(_unmark(m.group(1)), _unmark(m.group(2))) for m in _SYMBOL_IS.finditer(text)]
+    for m in _NAMED_SYMBOL.finditer(text):
+        name = m.group(1)
+        # "the expansion in small a", "the extensive quantities S, V": not definitions
+        if _NOT_A_NAME.search(name) or re.search(r"[^su]s$", name):
+            continue
+        found.append((_unmark(m.group(2)), _unmark(name)))
+    return [(sym, meaning) for sym, meaning in found if sym and len(meaning) > 3]
+
+
+def attach_glossaries(equations, page_definitions):
+    """Give each page's equations the paper's definition of each of their Greek symbols:
+    the nearest one stated on that page or before it, else on the next page (a "where"
+    clause can run over).
+
+    Greek only. Tested on two papers, every naming fix came from a Greek symbol (Φ, χ,
+    µ), and the only errors came from Latin capitals reused between sections: "U is the
+    energy density" from the thermodynamics section was applied to the metric function
+    U(r), turning two correct explanations wrong."""
+    by_page = {}
+    for eq in equations:
+        by_page.setdefault(eq.page, []).append(eq)
+    for page, eqs in by_page.items():
+        wanted = {sym for sym in set().union(*(eq.symbols for eq in eqs)) if sym in _GREEK}
+        order = [p for p in sorted(page_definitions, reverse=True) if p <= page] + [page + 1]
+        chosen = {}
+        for p in order:
+            for sym, meaning in page_definitions.get(p, []):
+                if sym in wanted and sym not in chosen:
+                    chosen[sym] = (p, meaning)
+        context = "\n".join(f"- {sym} (page {p + 1}): {meaning}" for sym, (p, meaning) in sorted(chosen.items()))
+        for eq in eqs:
+            eq.context = context
 
 
 def mark_page(chunk, page, next_id, extra_edits=()):
@@ -186,7 +277,8 @@ def mark_page(chunk, page, next_id, extra_edits=()):
             s, e = box["pos"]
             if re.fullmatch(r"[\d\s.–-]*", page.get_text("text", clip=pymupdf.Rect(box["bbox"]))):
                 continue  # a page number the layout model took for a formula
-            eq = Equation(next_id + len(equations), page.number, _numbers_in_box(page, box["bbox"], edges), tuple(box["bbox"]))
+            eq = Equation(next_id + len(equations), page.number, _numbers_in_box(page, box["bbox"], edges), tuple(box["bbox"]),
+                          _symbols_in_box(page, box["bbox"]))
             equations.append(eq)
             covered.update(eq.numbers)
             edits.append((s, e, f"\n\n{MARKER.format(eq.id)}\n\n"))
@@ -201,7 +293,8 @@ def mark_page(chunk, page, next_id, extra_edits=()):
                 # The same equation also has a formula box: drop the soup, keep one marker.
                 edits.append((s + start, s + end, ""))
                 continue
-            eq = Equation(next_id + len(equations), page.number, [number])
+            eq = Equation(next_id + len(equations), page.number, [number],
+                          symbols=_symbols_in_markdown(text[s + start : s + end]))
             equations.append(eq)
             covered.add(number)
             edits.append((s + start, s + end, f"\n\n{MARKER.format(eq.id)}\n\n"))
@@ -271,7 +364,14 @@ def check_model(model):
 
 def explain_page(doc, page_no, equations, model=DEFAULT_MODEL, timeout=600):
     """Ask the model to explain one page's equations. Returns {equation id: text}."""
-    prompt = PROMPT.format(where=_describe_labels(equations))
+    glossary = equations[0].context if equations else ""
+    if glossary:
+        glossary = (
+            "\n\nThe paper names some of the symbols in these equations as follows. Use these "
+            "names, but papers reuse symbols between sections, so if the page itself gives a "
+            "symbol another meaning, follow the page:\n" + glossary
+        )
+    prompt = PROMPT.format(where=_describe_labels(equations), glossary=glossary)
     image = _labelled_page_png(doc, page_no, equations)
     for _attempt in range(2):
         try:

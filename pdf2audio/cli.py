@@ -27,6 +27,7 @@ def build_parser():
     p.add_argument("--speed", type=float, default=1.0, help="Speed multiplier (default: 1.0)")
     p.add_argument("--list-voices", action="store_true", help="List available voices and exit")
     p.add_argument("--keep-references", action="store_true", help="Keep bibliography section (stripped by default)")
+    p.add_argument("--no-appendices", action="store_true", help="Stop at the first appendix")
     p.add_argument("--skip-equations", action="store_true", help="Remove equations entirely (default: say the equation's number)")
     p.add_argument("--explain-equations", action="store_true", help="Replace each display equation with a spoken explanation from a local model (needs Ollama)")
     p.add_argument("--llm-model", default=DEFAULT_MODEL, help=f"Ollama vision model for --explain-equations (default: {DEFAULT_MODEL})")
@@ -101,6 +102,7 @@ def main():
                 explain_equations=args.explain_equations,
                 llm_model=args.llm_model,
                 on_equation_page=on_equation_page,
+                skip_appendices=args.no_appendices,
             )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
