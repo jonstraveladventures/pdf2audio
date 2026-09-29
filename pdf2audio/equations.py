@@ -418,12 +418,17 @@ def _ask(model, prompt, image, timeout):
 def explain_page(doc, page_no, equations, model=DEFAULT_MODEL, timeout=900):
     """Ask the model to explain one page's equations. Returns {equation id: text}."""
     prompt = PROMPT.format(where=_describe_labels(equations), glossary=_glossary(equations))
-    answers = _ask(model, prompt, _labelled_page_png(doc, page_no, equations), timeout) or {}
+    image = _labelled_page_png(doc, page_no, equations)
     out = {}
-    for n, eq in enumerate(equations, 1):
-        text = str(answers.get(f"E{n}", "")).strip()
-        if text:
-            out[eq.id] = text
+    # The model sometimes answers for only some of the labels; ask once more for the rest.
+    for _round in range(2):
+        answers = _ask(model, prompt, image, timeout) or {}
+        for n, eq in enumerate(equations, 1):
+            text = str(answers.get(f"E{n}", "")).strip()
+            if text and eq.id not in out:
+                out[eq.id] = text
+        if len(out) == len(equations):
+            break
     return out
 
 
