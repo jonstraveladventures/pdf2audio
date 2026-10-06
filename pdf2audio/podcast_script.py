@@ -3,11 +3,15 @@
   podcast-script paper.pdf -o script.txt
   podcast-script notes.md -o script.txt --minutes 20
 
-The source can be a PDF, Markdown or plain text. A local model (through Ollama) first
+The source can be LaTeX (a .tex file, or a folder holding one, as arXiv supplies), a PDF,
+Markdown or plain text; prefer LaTeX where there is a choice, since PDF text loses
+superscripts and scrambles author blocks. A local model (through Ollama) first
 plans the episode as sections, then writes each section as a conversation: host A
 explains, host B asks what a listener would ask. Every number and name in a section must
 appear in the source; a section that fails is written again with the problems pointed
-out, up to twice. Numbers and acronyms are then written out as they should be said, and
+out, up to twice. A section that passes is then edited against the source and the
+episode so far, to strike claims the source does not make, points already made, and
+equations read out symbol by symbol; the edit is kept only if it still passes. Numbers and acronyms are then written out as they should be said, and
 the script is ready for `podcast`. A report of each section's check goes beside the
 script as <script>.check.json; the exit code is non-zero if any section still fails.
 
@@ -41,6 +45,8 @@ STYLE = """How the conversation should sound:
   limit", "the problem is solved"). B's questions must not assert anything either. If the
   source does not say, the hosts do not say.
 - Each point once: no host repeats what the other has just said, except a short echo.
+- Never read an equation out symbol by symbol. Say in words what it means and what it
+  predicts ("quality rises with the log of model size and of topic frequency").
 - Write every number in digits (38, 8,900, 60%, 0.74) so it can be checked; it is turned
   into words later. Name people, places and organisations exactly as the source does.
 - Plain words. No bullet points, headings, stage directions, sound effects or markdown.
@@ -86,6 +92,43 @@ The document:
 >>>"""
 
 
+EDIT = """You are editing one section of a two-host podcast episode about the document \
+below, before it is recorded. Correct the draft section in these ways and change nothing else:
+
+1. Delete or correct any statement, by either host, that the document does not make: a \
+comparison, ranking, judgement, consequence or prediction it does not state, or a \
+generalisation of one case (one model becoming "models", one topic becoming "topics").
+2. Delete any point already made earlier in this section or in the episode so far, except \
+a short echo.
+3. Where an equation or derivation is read out symbol by symbol, replace it with one or \
+two sentences saying in words what it means.
+4. The hosts are presenters: "the authors", never "we" or "you" for the people who did \
+the work.
+
+Leave every line that needs none of these changes exactly as it is. Keep the exchange \
+whole: when you delete a question, delete or rephrase the answer that depends on it, and \
+when you delete an answer, delete its question. The hosts alternate; never leave one host \
+speaking twice in a row. You may add a short bridging line where a deletion leaves a gap, \
+if it states nothing new. Keep numbers in \
+digits. Reply with only the edited section, one turn per line, each line starting "A: " \
+or "B: ".
+
+The episode so far:
+<<<
+{so_far}
+>>>
+
+The draft section:
+<<<
+{draft}
+>>>
+
+The document:
+<<<
+{source}
+>>>"""
+
+
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -118,14 +161,45 @@ def check_model(model):
 
 # ---------- source ----------
 
+def read_tex(path):
+    """Plain text of a LaTeX paper through pandoc: abstract kept, appendices dropped."""
+    import subprocess
+
+    if path.is_dir():
+        mains = [f for f in sorted(path.glob("*.tex")) if "\\documentclass" in f.read_text(errors="ignore")]
+        if not mains:
+            sys.exit(f"podcast-script: no .tex file with \\documentclass in {path}")
+        path = mains[0]
+    tex = path.read_text(encoding="utf-8", errors="ignore")
+    tex = re.split(r"\\appendix\b", tex)[0] + ("\n\\end{document}\n" if "\\appendix" in tex else "")
+
+    def plain(latex, standalone):
+        cmd = ["pandoc", "-f", "latex", "-t", "plain", "--wrap=none"] + (["-s"] if standalone else [])
+        r = subprocess.run(cmd, input=latex, capture_output=True, text=True, cwd=path.parent)
+        if r.returncode:
+            sys.exit(f"podcast-script: pandoc could not read {path.name}: {r.stderr[:300]}")
+        return r.stdout
+
+    text = plain(tex, True)
+    m = re.search(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", tex, re.S)
+    if m:
+        abstract = "Abstract\n\n" + plain(m.group(1), False).strip() + "\n\n"
+        head, sep, rest = text.partition("\n\n\n")
+        text = head + "\n\n" + abstract + rest if sep else abstract + text
+    return text
+
+
 def read_source(path):
     path = Path(path).expanduser()
-    if path.suffix.lower() == ".pdf":
+    if path.is_dir() or path.suffix.lower() == ".tex":
+        text = read_tex(path)
+    elif path.suffix.lower() == ".pdf":
         from pdf2audio.extractor import extract_and_clean
 
         _, text = extract_and_clean(str(path), skip_appendices=True)
     else:
         text = path.read_text(encoding="utf-8")
+    text = re.sub(r"[\u00a0\u2000-\u200a\u202f]", " ", text)  # pandoc writes thin spaces around "="
     # PDF text often splits a number at its thousands comma ("9 , 120").
     return re.sub(r"(?<=\d) , (?=\d{3}\b)", ",", text)
 
@@ -156,9 +230,15 @@ def unsupported(turns, numbers, words):
         for sentence in re.split(r"(?<=[.!?])\s+", text):
             toks = re.findall(r"[A-Za-z][A-Za-z'À-ɏ-]*", sentence)
             for tok in toks[1:]:
-                if tok[0].isupper() and tok.lower() not in ALWAYS_OK and tok.lower() not in words \
-                        and tok.lower().rstrip("s") not in words and tok.lower().removesuffix("'s") not in words:
-                    missing.append(tok)
+                if not tok[0].isupper() or tok.lower() in words:
+                    continue
+                parts = [p for p in tok.split("-") if len(p) > 1 and p[0].isupper()]
+                for part in parts:
+                    low = part.lower()
+                    if low not in ALWAYS_OK and low not in words and low.rstrip("s") not in words \
+                            and low.removesuffix("'s") not in words:
+                        missing.append(tok)
+                        break
     return sorted(set(missing))
 
 
@@ -171,6 +251,11 @@ def shape_problems(turns, budget, keep=()):
         if len(key.split()) >= 6 and key in seen:
             problems.append("repeated turn: " + text[:60])
         seen.add(key)
+    run = 1
+    for (h0, _), (h1, _) in zip(turns, turns[1:]):
+        run = run + 1 if h1 == h0 else 1
+        if run == 3:
+            problems.append(f"host {h1} speaks three or more times in a row")
     words = sum(len(t.split()) for _, t in turns)
     if words > 1.6 * budget:
         problems.append(f"{words} words against a budget of {budget}")
@@ -258,10 +343,10 @@ def spoken(text, keep=()):
     text = re.sub(r"(?<=\d)\s*/\s*", " over ", text)
     text = re.sub(r"\s*/\s*", " or ", text)
     text = re.sub(r"(?<=\d)\s*[x×](?![A-Za-z])", " times", text)
-    text = re.sub(r"\b(\d+)B\b", lambda m: number_words(m.group(1), False) + " billion", text)
-    text = re.sub(r"\b(\d+)M\b", lambda m: number_words(m.group(1), False) + " million", text)
-    text = re.sub(r"\b(\d+)T\b", lambda m: number_words(m.group(1), False) + " trillion", text)
-    text = re.sub(r"\b(\d+)K\b", lambda m: number_words(m.group(1), False) + " thousand", text)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)B\b", lambda m: number_words(m.group(1), False) + " billion", text)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)M\b", lambda m: number_words(m.group(1), False) + " million", text)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)T\b", lambda m: number_words(m.group(1), False) + " trillion", text)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)K\b", lambda m: number_words(m.group(1), False) + " thousand", text)
     text = re.sub(num, lambda m: number_words(m.group(0)), text)
 
     def letters(m):
@@ -290,7 +375,17 @@ def plan(model, source, words):
     sys.exit("podcast-script: the model did not return a usable plan")
 
 
-def write_section(model, source, section, i, n, previous, numbers, words, keep=()):
+def edit_section(model, source, turns, so_far, budget, numbers, words, keep=()):
+    """The draft edited against the source and the episode so far, or None if the edit fails a check."""
+    draft = "\n".join(f"{h}: {t}" for h, t in turns)
+    edited = parse_dialogue(chat(model, EDIT.format(so_far=so_far or "(this is the first section)", draft=draft,
+                                                    source=source)))
+    if not edited or unsupported(edited, numbers, words) or shape_problems(edited, budget, keep):
+        return None
+    return edited
+
+
+def write_section(model, source, section, i, n, previous, numbers, words, keep=(), so_far=""):
     points = "\n".join(f"- {p}" for p in section["points"])
     if i == 0:
         position = ("This is the opening section: A welcomes the listener and says what the document is and who wrote "
@@ -313,9 +408,19 @@ def write_section(model, source, section, i, n, previous, numbers, words, keep=(
             + (f"; not in the source: {', '.join(missing)}" if missing else "")
             + (f"; {'; '.join(shape)}" if shape else "")
             + ("; checks pass" if not missing and not shape else ""))
-        if best is None or len(missing) + len(shape) < len(best[1]["unsupported"]) + len(best[1]["problems"]):
-            best = (turns, result)
+        score = len(missing) + len(shape) + (0 if turns else 1000)
+        if best is None or score < best[2]:
+            best = (turns, result, score)
         if not missing and not shape:
+            edited = edit_section(model, source, turns, so_far, budget, numbers, words, keep)
+            result["edit"] = "kept" if edited else "rejected: the edited version failed a check"
+            if edited:
+                result.update(words_before_edit=result["words"], words=sum(len(t.split()) for _, t in edited),
+                              lines_before_edit=len(turns), lines=len(edited))
+                turns = edited
+            log(f"section {i + 1}/{n}: edit {result['edit']}"
+                + (f", {result['words_before_edit']} -> {result['words']} words" if edited else ""))
+            best = (turns, result, 0)
             break
         feedback = "A previous draft of this section had these faults; avoid them:\n"
         if missing:
@@ -324,13 +429,13 @@ def write_section(model, source, section, i, n, previous, numbers, words, keep=(
         if shape:
             feedback += "".join(f"- {p}\n" for p in shape)
             feedback += "Write each point once, keep to the word budget, and write symbols as words.\n"
-    return best
+    return best[:2]
 
 
 def main():
     ap = argparse.ArgumentParser(prog="podcast-script", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("source", help="the document: .pdf, .md or .txt")
+    ap.add_argument("source", help="the document: .tex (or a folder holding one), .pdf, .md or .txt")
     ap.add_argument("-o", "--output", required=True, help="script to write, for `podcast`")
     ap.add_argument("--minutes", type=float, default=15, help="target episode length (default 15)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model (default {DEFAULT_MODEL})")
@@ -347,10 +452,12 @@ def main():
     log(f"plan: {len(sections)} sections: " + "; ".join(s["title"] for s in sections))
 
     keep = set(load_say())
-    lines, report, previous = [], [], ""
+    lines, report, previous, so_far = [], [], "", []
     for i, section in enumerate(sections):
-        turns, result = write_section(a.model, source, section, i, len(sections), previous, numbers, words, keep)
+        turns, result = write_section(a.model, source, section, i, len(sections), previous, numbers, words, keep,
+                                      "\n".join(so_far))
         report.append(result)
+        so_far += [f"# {section['title']}"] + [f"{h}: {t}" for h, t in turns]
         previous = "\n".join(f"{h}: {t}" for h, t in turns[-4:])
         lines.append(f"# {section['title']}")
         lines += [f"{h}: {spoken(t, keep)}" for h, t in turns]
