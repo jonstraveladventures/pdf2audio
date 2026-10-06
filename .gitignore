@@ -11,3 +11,4 @@ test.pdf
 *.m4a
 *.flac
 podcast-trial/engines/
+.venv-podcast/
