@@ -162,6 +162,25 @@ def unsupported(turns, numbers, words):
     return sorted(set(missing))
 
 
+def shape_problems(turns, budget, keep=()):
+    """Faults a numbers-and-names check cannot see: loops, runaway length, symbols left."""
+    problems = []
+    seen = set()
+    for _, text in turns:
+        key = re.sub(r"\W+", " ", text.lower()).strip()
+        if len(key.split()) >= 6 and key in seen:
+            problems.append("repeated turn: " + text[:60])
+        seen.add(key)
+    words = sum(len(t.split()) for _, t in turns)
+    if words > 1.6 * budget:
+        problems.append(f"{words} words against a budget of {budget}")
+    for _, text in turns:
+        left = set(re.findall(r"[^\w\s.,;:!?'’\"“”()\[\]-]|_", spoken(text, keep).replace("[laugh]", "")))
+        if left:
+            problems.append("symbols that cannot be spoken: " + " ".join(sorted(left)))
+    return sorted(set(problems))
+
+
 def parse_dialogue(reply):
     turns = []
     for line in reply.splitlines():
@@ -223,6 +242,7 @@ def spoken(text, keep=()):
     text = re.sub(rf"({num})\s*%", lambda m: number_words(m.group(1), False) + " per cent", text)
     text = re.sub(rf"({num})\s*[–]\s*({num})", lambda m: f"{m.group(1)} to {m.group(2)}", text)
     text = re.sub(r"~\s*(?=\d)", "about ", text)
+    text = re.sub(r"(?:(?<=\s)|^)[−-]\s*(?=\d)", "minus ", text)
     text = re.sub(r"\s*±\s*", " plus or minus ", text)
     text = re.sub(r"\s*(?:=|≈)\s*", lambda m: " is about " if "≈" in m.group(0) else " equals ", text)
     text = re.sub(r"\s*[<≤]\s*(?=\d)", " under ", text)
@@ -231,7 +251,12 @@ def spoken(text, keep=()):
     text = re.sub(r"(?<=[A-Za-z])\s*×\s*(?=[A-Za-z])", " by ", text)
     for letter, name in GREEK.items():
         text = text.replace(letter, f" {name} ")
-    text = re.sub(r"\b([A-Za-z])(\d)", r"\1 \2", text)  # V4 -> V 4
+    text = re.sub(r"\b([A-Za-z]+)(\d)", r"\1 \2", text)  # V4 -> V 4, Qwen3 -> Qwen 3
+    text = re.sub(r"\s*[—–]\s*", ", ", text)  # dashes left after ranges are pauses
+    text = re.sub(r"√\s*", "the square root of ", text)
+    text = re.sub(r"\s*\+\s*", " plus ", text)
+    text = re.sub(r"(?<=\d)\s*/\s*", " over ", text)
+    text = re.sub(r"\s*/\s*", " or ", text)
     text = re.sub(r"(?<=\d)\s*[x×](?![A-Za-z])", " times", text)
     text = re.sub(r"\b(\d+)B\b", lambda m: number_words(m.group(1), False) + " billion", text)
     text = re.sub(r"\b(\d+)M\b", lambda m: number_words(m.group(1), False) + " million", text)
@@ -265,7 +290,7 @@ def plan(model, source, words):
     sys.exit("podcast-script: the model did not return a usable plan")
 
 
-def write_section(model, source, section, i, n, previous, numbers, words):
+def write_section(model, source, section, i, n, previous, numbers, words, keep=()):
     points = "\n".join(f"- {p}" for p in section["points"])
     if i == 0:
         position = ("This is the opening section: A welcomes the listener and says what the document is and who wrote "
@@ -275,22 +300,30 @@ def write_section(model, source, section, i, n, previous, numbers, words):
     else:
         position = "This section continues the episode: no greeting, no goodbye."
     prev = ("The conversation so far ended like this; carry on from it without repeating it:\n" + previous) if previous else ""
-    feedback, best = "", None
+    feedback, best, budget = "", None, int(section.get("words", 300))
     for attempt in range(3):
-        reply = chat(model, WRITE.format(words=section.get("words", 300), points=points, position=position,
+        reply = chat(model, WRITE.format(words=budget, points=points, position=position,
                                          previous=prev, style=STYLE, feedback=feedback, source=source))
         turns = parse_dialogue(reply)
         missing = unsupported(turns, numbers, words) if turns else ["(no dialogue in the reply)"]
+        shape = shape_problems(turns, budget, keep)
         result = dict(title=section["title"], attempt=attempt + 1, words=sum(len(t.split()) for _, t in turns),
-                      unsupported=missing)
+                      unsupported=missing, problems=shape)
         log(f"section {i + 1}/{n} '{section['title']}': {result['words']} words"
-            + (f"; not in the source: {', '.join(missing)}" if missing else "; numbers and names check"))
-        if best is None or len(missing) < len(best[1]["unsupported"]):
+            + (f"; not in the source: {', '.join(missing)}" if missing else "")
+            + (f"; {'; '.join(shape)}" if shape else "")
+            + ("; checks pass" if not missing and not shape else ""))
+        if best is None or len(missing) + len(shape) < len(best[1]["unsupported"]) + len(best[1]["problems"]):
             best = (turns, result)
-        if not missing:
+        if not missing and not shape:
             break
-        feedback = ("A previous draft of this section used these numbers or names, which the document does not "
-                    "contain: " + ", ".join(missing) + ". Use only numbers and names the document states.\n")
+        feedback = "A previous draft of this section had these faults; avoid them:\n"
+        if missing:
+            feedback += ("- numbers or names the document does not contain: " + ", ".join(missing)
+                         + ". Use only numbers and names the document states.\n")
+        if shape:
+            feedback += "".join(f"- {p}\n" for p in shape)
+            feedback += "Write each point once, keep to the word budget, and write symbols as words.\n"
     return best
 
 
@@ -316,7 +349,7 @@ def main():
     keep = set(load_say())
     lines, report, previous = [], [], ""
     for i, section in enumerate(sections):
-        turns, result = write_section(a.model, source, section, i, len(sections), previous, numbers, words)
+        turns, result = write_section(a.model, source, section, i, len(sections), previous, numbers, words, keep)
         report.append(result)
         previous = "\n".join(f"{h}: {t}" for h, t in turns[-4:])
         lines.append(f"# {section['title']}")
@@ -324,12 +357,12 @@ def main():
         lines.append("")
     out = Path(a.output).expanduser()
     out.write_text("\n".join(lines), encoding="utf-8")
-    failed = [r["title"] for r in report if r["unsupported"]]
+    failed = [r["title"] for r in report if r["unsupported"] or r["problems"]]
     out.with_name(out.name + ".check.json").write_text(json.dumps(
         dict(source=str(a.source), model=a.model, plan=sections, sections=report, failed=failed), indent=2))
     total = sum(r["words"] for r in report)
     log(f"wrote {out}: {total} words, about {total / WORDS_PER_MINUTE:.0f} minutes"
-        + (f"; sections with unsupported numbers or names: {failed}" if failed else "; every section checks"))
+        + (f"; sections that still fail their checks: {failed}" if failed else "; every section passes its checks"))
     sys.exit(1 if failed else 0)
 
 
