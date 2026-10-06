@@ -8,3 +8,6 @@ build/
 test.pdf
 .claude/
 .venv/
+*.m4a
+*.flac
+podcast-trial/engines/
