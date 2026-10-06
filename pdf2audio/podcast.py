@@ -5,7 +5,7 @@
 
 Script: one turn per line, "A: ..." for the first host and "B: ..." for the second.
 A line starting with "#" marks a section; it is not spoken, and a long episode is split
-into parts only at section marks. "[laugh]" makes a host laugh. Write numbers and
+into parts only at section marks; a short tail joins the part before it. "[laugh]" makes a host laugh. Write numbers and
 symbols as they should be said.
 
 Voices: two fixed synthetic voices in ~/models/podcast/voices (host_a.wav and
@@ -70,11 +70,18 @@ def read_script(path):
     return [s for s in sections if s[1]]
 
 
+def part_size(turns):
+    return sum(len(t.split()) for _, t in turns)
+
+
 def plan_parts(sections, part_words):
-    """Group whole sections into parts of at most about part_words words."""
+    """Group whole sections into parts of at most about part_words words.
+
+    A last part under a quarter of part_words is folded into the one before it, as long
+    as that part stays within a quarter over part_words."""
     parts, current, count = [], [], 0
     for _, turns in sections:
-        n = sum(len(t.split()) for _, t in turns)
+        n = part_size(turns)
         if current and count + n > part_words:
             parts.append(current)
             current, count = [], 0
@@ -82,6 +89,9 @@ def plan_parts(sections, part_words):
         count += n
     if current:
         parts.append(current)
+    if len(parts) > 1 and part_size(parts[-1]) < part_words / 4 and \
+            part_size(parts[-2]) + part_size(parts[-1]) <= 1.25 * part_words:
+        parts[-2:] = [parts[-2] + parts[-1]]
     return parts
 
 
