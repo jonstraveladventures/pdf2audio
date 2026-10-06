@@ -78,12 +78,35 @@ Leading and trailing silence is trimmed unless `--no-trim` is given; `--rate 480
 resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
 `{"id", "text", "voice"}` or an `{id: text}` object) or CSV with `id` and `text` columns.
 
+## Two-host episodes: `podcast-script` and `podcast`
+
+`podcast-script` turns a document (PDF, Markdown or text) into a conversation between two
+hosts, written by a local model through Ollama. The model plans the episode in sections
+and writes each one; every number and name in a section must appear in the source, and a
+section that fails is rewritten with the problems pointed out. Numbers and acronyms are
+then written out as they are said. The check covers numbers and names only, so read the
+script against the source before rendering it.
+
+`podcast` renders the script with MOSS-TTSD, copying two reference voices kept in
+`~/models/podcast/voices` (`host_a.wav` and `host_b.wav`, each with its words in a `.txt`
+beside it). Each part of about ten minutes is transcribed back with whisper, diarised to
+confirm two voices, and rendered again if it fails.
+
+```bash
+podcast-script paper.pdf -o script.txt --minutes 15
+podcast script.txt -o episode.m4a --say Nguyen=Win
+```
+
+A script is one turn per line, `A: ...` or `B: ...`, with `#` lines marking sections; a
+long episode is split into parts only at those marks. Respellings for words the voice
+model misreads can also go in `~/models/podcast/say.txt`, one `WORD=SPOKEN` per line.
+
 ## Requirements
 
 - macOS with Apple Silicon (M1 or later). Other platforms fall back to the PyTorch build of Kokoro.
 - Python 3.10–3.12
 - `espeak-ng` and `ffmpeg` via Homebrew
-- For `--explain-equations` only: [Ollama](https://ollama.com) with a vision model (`ollama pull qwen3.5:35b-a3b`, about 23 GB)
+- For `--explain-equations` and `podcast-script`: [Ollama](https://ollama.com) with `qwen3.5:35b-a3b` (`ollama pull qwen3.5:35b-a3b`, about 23 GB)
 
 ## How it works
 
