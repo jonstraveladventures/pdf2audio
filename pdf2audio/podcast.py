@@ -40,8 +40,16 @@ CODEC = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 VOICES = Path.home() / "models/podcast/voices"
 TRANSCRIBE = Path.home() / "bin/transcribe"
 TAGS = {"A": "[S1]", "B": "[S2]"}
-# Words MOSS-TTSD misreads, respelt the way they should sound. Extend with --say.
-SAY = {}
+# Words MOSS-TTSD misreads, respelt the way they should sound: one WORD=SPOKEN per line
+# in a local file outside the repository, extended with --say.
+SAY_FILE = Path.home() / "models/podcast/say.txt"
+
+
+def load_say(path=SAY_FILE):
+    if not path.exists():
+        return {}
+    pairs = [l.split("=", 1) for l in path.read_text(encoding="utf-8").splitlines() if "=" in l and not l.startswith("#")]
+    return {w.strip(): s.strip() for w, s in pairs}
 MAX_WER = 0.08
 PAUSE_S = 1.0
 PRESENCE_DB, OFFSET_DB = 6.0, 2.0  # chosen by ear, 2026-10-06
@@ -360,7 +368,7 @@ def main():
     out = Path(a.output).expanduser().resolve()
     work = out.with_name(out.name + ".parts")
     work.mkdir(parents=True, exist_ok=True)
-    say = dict(SAY, **dict(s.split("=", 1) for s in a.say))
+    say = dict(load_say(), **dict(s.split("=", 1) for s in a.say))
     parts = plan_parts(read_script(a.script), a.part_words)
     total_words = sum(len(t.split()) for p in parts for _, t in p)
     log(f"{len(parts)} part(s), {total_words} words, about {total_words / 2.5 / 60:.0f} minutes")

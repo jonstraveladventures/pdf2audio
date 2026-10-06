@@ -12,3 +12,12 @@ test.pdf
 *.flac
 podcast-trial/engines/
 .venv-podcast/
+
+# Project-specific material never goes in this public repository: working records,
+# trial renders and scripts, and anything made for a particular project.
+handoffs/
+decision-log.md
+podcast-trial/
+tts-trial/
+AGENTS.md
+.DS_Store
