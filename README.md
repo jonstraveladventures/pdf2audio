@@ -13,7 +13,7 @@ If you have [Claude Code](https://claude.ai/claude-code) installed, you can have
 
 2. **Clone this repo:**
    ```bash
-   git clone https://github.com/jonathanshock/pdf2audio.git
+   git clone https://github.com/jonstraveladventures/pdf2audio.git
    cd pdf2audio
    ```
 
