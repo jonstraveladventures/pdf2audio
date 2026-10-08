@@ -8,10 +8,11 @@ Markdown or plain text; prefer LaTeX where there is a choice, since PDF text los
 superscripts and scrambles author blocks. A local model (through Ollama) first plans the
 episode as sections and reads off the title and authors; the opening, which names them,
 and the goodbye are written by this program, not the model. Each section is then written
-as a conversation: host A explains, and every line of A's that states anything carries the
-passage of the source it rests on, which is not spoken; host B only asks and restates what
-A has said. A may also explain a general term the source uses but does not explain (what a
-sigmoid is) in a BACKGROUND line, at most two in a section, with no numbers or names.
+as a conversation, asked for its planned length and no less than four fifths of it: host A
+explains, and every line of A's that states anything carries the passage of the source it
+rests on, which is not spoken; host B only asks and restates what A has said. A may also
+explain a general term the source uses but does not explain (what a sigmoid is) in a
+BACKGROUND line, at most two in a section, with no numbers or names.
 
 Every line is checked. A line is faulty if:
   - a number or name is not in the source, or a symbol is left that cannot be spoken;
@@ -21,17 +22,19 @@ Every line is checked. A line is faulty if:
   - an A line copies more than 12 words in a row from its passage (--max-copied N to
     change; 0 only measures and reports it);
   - a BACKGROUND line names a term the source does not use or one an earlier section
-    explained, holds a number or name, or is the third in the section;
+    explained, holds a number or name, says what the document or its authors found, or is
+    the third in the section;
   - B says a number or name A has not said;
   - the model, asked about each line on its own, finds an A line its passage does not
     support, an A line with no passage that says something about the document, a
     BACKGROUND line that is not general knowledge, or a B line that brings in something new.
 A faulty line is rewritten on its own, up to twice, with its faults pointed out (for a
 passage not in the source, the source's nearest sentence is quoted); a B line still faulty
-after that is replaced by one that says nothing ("Go on."). The section is written again,
-up to three times, if a fault cannot be mended line by line (one host three times running,
-or over 1.6 times its budget), if A's faulty lines are more than a third of its lines, or
-if A's lines are still faulty after their repairs.
+after that is replaced by one that only invites A to go on ("Go on."), and the A line after
+it is rewritten to follow on, the rewrite kept only if it passes its checks. The section is
+written again, up to three times, if a fault cannot be mended line by line (one host three
+times running, or over 1.6 times its budget), if A's faulty lines are more than a third of
+its lines, or if A's lines are still faulty after their repairs.
 A section that passes is edited against the source and the episode so far; the edit is
 kept only if it passes the same checks, cuts no more than a third of the section, and
 keeps the numbers of the section's planned points. Numbers and acronyms are then written
@@ -131,8 +134,8 @@ Reply with only a JSON object:
 {{"title": "...", "authors": [{{"name": "...", "affiliation": "..."}}],
  "sections": [{{"title": "...", "words": 300, "points": ["...", "..."]}}]}}"""
 
-WRITE = """Write one section of the episode: about {words} words of conversation covering \
-these points:
+WRITE = """Write one section of the episode: about {words} words of conversation, and no fewer \
+than {min_words}, covering these points:
 {points}
 
 {position}
@@ -402,7 +405,10 @@ def read_source(path):
 # ---------- checks ----------
 
 def norm_number(tok):
-    return tok.replace(",", "").rstrip(".")
+    """A number as compared with the source's: no thousands commas, and no trailing zeros after the
+    point, so that "0.9" matches the paper's "0.90"."""
+    tok = tok.replace(",", "").rstrip(".")
+    return tok.rstrip("0").rstrip(".") if "." in tok else tok
 
 
 def source_terms(source):
@@ -525,7 +531,7 @@ def spoken(text, keep=()):
 # ---------- dialogue and its sources ----------
 
 MAX_BACKGROUND = 2  # BACKGROUND lines allowed in a section
-STAND_INS = ["Go on.", "Right.", "Okay, go on.", "I see."]  # for a B line that still fails after repair
+STAND_INS = ["Go on.", "Tell me more.", "Carry on.", "Go on, then."]  # for a B line still failing after repair
 COPY_REPORT = 8  # copied runs longer than this (the prompt's limit) are marked in the review sheet
 
 
@@ -711,6 +717,10 @@ def cite_faults(turns, quotes, bg, src_norm, max_copied=0, used=(), explained=()
                     why.append(f'"{term}" was already explained in an earlier section; do not explain it again')
             if re.search(r"\d", t) or [n for n in names_in(t) if n.lower() not in norm_text(term)]:
                 why.append("a BACKGROUND line may hold no number or name")
+            if re.search(r"\bthe authors\b|\bth(e|is) (study|paper)\b(?! of)|\bthey (found|find|report|reported)\b"
+                         r"|\bthey show(ed)? that\b", t, re.I):
+                why.append("a BACKGROUND line explains a general term; it may not say what the document or its "
+                           "authors did or found, which needs a SOURCE")
             if background > MAX_BACKGROUND:
                 why.append(f"more than {MAX_BACKGROUND} BACKGROUND lines in this section: cite a SOURCE instead, "
                            "or leave the explanation out")
@@ -911,7 +921,8 @@ def repair_line(ctx, turns, quotes, bg, i, reasons, so_far_lines, label):
 def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_ROUNDS):
     """Check every line and repair the faulty ones one at a time, up to `rounds` times, unless a fault is
     one no line repair can mend or A's faulty lines are more than a third of all the lines. A B line still faulty
-    after the repairs becomes a stand-in that says nothing ("Go on."). Returns the section as it
+    after the repairs becomes a stand-in that only invites A to go on ("Go on."), and the A line after it
+    is repaired to follow on from it. Returns the section as it
     stands, its section faults, its line faults, the number of lines checked by the model, the number
     of repairs made and the B lines replaced, as (stand-in, line, faults)."""
     turns, quotes, bg = list(turns), list(quotes), list(bg)
@@ -919,16 +930,38 @@ def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_RO
     for r in range(rounds + 1):
         section, faults, checked = all_faults(ctx, turns, quotes, bg, so_far_lines, budget, label)
         if r == rounds and rounds and not section:
-            # A stand-in changes what the B lines after it follow, so check again until none is faulty.
+            # The A line after a stand-in was written to answer the line it replaced, so it is repaired to
+            # follow on; a repair that leaves it faulty is undone. The lines after a change follow
+            # something new, so the section is checked again until no B line is faulty.
             for _ in range(3):
                 bad = [i for i in sorted(faults) if turns[i][0] == "B"]
                 if not bad:
                     break
+                followers = {}
                 for i in bad:
                     stand_ins.append((STAND_INS[len(stand_ins) % len(STAND_INS)], turns[i][1], faults[i]))
                     turns[i], quotes[i], bg[i] = ("B", stand_ins[-1][0]), [], None
+                    if i + 1 < len(turns) and turns[i + 1][0] == "A":
+                        followers[i + 1] = (turns[i + 1], quotes[i + 1], bg[i + 1])
                 log(f"{label}: {len(bad)} B lines still faulty after repair replaced by a stand-in")
+
+                def follow(j):
+                    why = [f'the line before it is now B\'s "{turns[j - 1][1]}", put in for a line of B\'s that failed '
+                           "its checks: make this line follow on from it, not answer a question or remark B no "
+                           "longer makes, and keep what it says"]
+                    return j, repair_line(ctx, turns, quotes, bg, j, why, so_far_lines, label)
+                with ThreadPoolExecutor(max_workers=ctx.parallel) as pool:
+                    for j, mended in pool.map(follow, sorted(followers)):
+                        if mended and (turns[j], quotes[j], bg[j]) != mended:
+                            turns[j], quotes[j], bg[j] = mended
+                            repairs += 1
                 section, faults, checked = all_faults(ctx, turns, quotes, bg, so_far_lines, budget, label)
+                undo = [j for j in followers if j in faults and (turns[j], quotes[j], bg[j]) != followers[j]]
+                for j in undo:
+                    turns[j], quotes[j], bg[j] = followers[j]
+                    repairs -= 1
+                if undo:
+                    section, faults, checked = all_faults(ctx, turns, quotes, bg, so_far_lines, budget, label)
         if section or not faults or r == rounds or sum(turns[i][0] == "A" for i in faults) > len(turns) / 3:
             return turns, quotes, bg, section, faults, checked, repairs, stand_ins
         log(f"{label}: repairing {len(faults)} of {len(turns)} lines")
@@ -950,9 +983,10 @@ def copy_runs(turns, quotes):
 # ---------- frame ----------
 
 def in_block(text, src_norm):
-    """Whether the source holds the text, ignoring spaces and commas: an author block's line breaks may
-    come back from the plan as commas ("Centre, Canada" for "Centre" and "Canada" on two lines)."""
-    return re.sub(r"[\s,]", "", norm_text(text)).strip(".") in re.sub(r"[\s,]", "", src_norm)
+    """Whether the source holds the text, ignoring spaces, commas and semicolons: an author block's line
+    breaks may come back from the plan as either ("Centre, Canada" for "Centre" and "Canada" on two
+    lines)."""
+    return re.sub(r"[\s,;]", "", norm_text(text)).strip(".") in re.sub(r"[\s,;]", "", src_norm)
 
 
 def frame(meta, src_norm):
@@ -1066,7 +1100,8 @@ def write_section(ctx, section, i, n, previous, so_far_lines, covered, later=())
     feedback, best, budget = "", None, int(section.get("words", 300))
     label = f"section {i + 1}/{n}"
     for attempt in range(ATTEMPTS):
-        reply = chat(ctx.model, ctx.prefix + WRITE.format(words=budget, points=points, position=position, covered=cov,
+        reply = chat(ctx.model, ctx.prefix + WRITE.format(words=budget, min_words=int(budget * 0.8), points=points,
+                                                          position=position, covered=cov,
                                                           previous=prev, style=STYLE, feedback=feedback,
                                                           max_background=MAX_BACKGROUND),
                      f"write {label}", think=False)

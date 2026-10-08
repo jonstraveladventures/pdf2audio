@@ -82,17 +82,17 @@ resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
 
 `podcast-script` turns a document (LaTeX, PDF, Markdown or text) into a conversation
 between two hosts, written by a local model through Ollama. The model plans the episode in
-sections and writes each one. Host A explains, and each of A's lines carries the passage
+sections and writes each one, asked for no less than four fifths of its planned length. Host A explains, and each of A's lines carries the passage
 of the source it rests on, which must be in the source word for word and hold every
 number A says; the passage is not spoken, so A explains in its own words. A may also
 explain a general term the source uses (what a sigmoid is) in a background line, at most
-two a section, with no numbers or names. Host B only asks and restates, and may not say a
+two a section, with no numbers or names and nothing the source's authors found. Host B only asks and restates, and may not say a
 number or name before A has. The model then checks each line on its own: A's against its
 passage, B's against the conversation before it, and an A line with no passage for whether
 it says anything about the source. A faulty line is rewritten on its own, up
 to twice, with its faults pointed out (a passage not in the source is answered with the
-source's nearest sentence); a line of B's that still fails is replaced by one that adds
-nothing ("Go on."). A section is written again, up to four times, when A's faulty lines are
+source's nearest sentence); a line of B's that still fails is replaced by one that only
+invites A to go on ("Go on."), and A's next line is rewritten to follow on from it. A section is written again, up to four times, when A's faulty lines are
 more than a third of its lines or the section as a whole is faulty (one host three turns
 running, far over its word budget). A passage from a sentence an earlier section cited, or
 a term explained in one, counts as a fault, so each point is made once. A passing section is
