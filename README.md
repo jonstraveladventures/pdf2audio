@@ -80,12 +80,33 @@ resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
 
 ## Two-host episodes: `podcast-script` and `podcast`
 
-`podcast-script` turns a document (PDF, Markdown or text) into a conversation between two
-hosts, written by a local model through Ollama. The model plans the episode in sections
-and writes each one; every number and name in a section must appear in the source, and a
-section that fails is rewritten with the problems pointed out. Numbers and acronyms are
-then written out as they are said. The check covers numbers and names only, so read the
-script against the source before rendering it.
+`podcast-script` turns a document (LaTeX, PDF, Markdown or text) into a conversation
+between two hosts, written by a local model through Ollama. The model plans the episode in
+sections and writes each one. Host A explains, and each of A's lines carries the passage
+of the source it rests on, which must be in the source word for word and hold every
+number A says; the passage is not spoken, so A explains in its own words. A may also
+explain a general term the source uses (what a sigmoid is) in a background line, at most
+two a section, with no numbers or names. Host B only asks and restates, and may not say a
+number or name before A has. The model then checks each line on its own: A's against its
+passage, B's against the conversation before it, and an A line with no passage for whether
+it says anything about the source. A faulty line is rewritten on its own, up
+to twice, with its faults pointed out (a passage not in the source is answered with the
+source's nearest sentence); a line of B's that still fails is replaced by one that adds
+nothing ("Go on."). A section is written again, up to four times, when A's faulty lines are
+more than a third of its lines or the section as a whole is faulty (one host three turns
+running, far over its word budget). A passage from a sentence an earlier section cited, or
+a term explained in one, counts as a fault, so each point is made once. A passing section is
+edited; an edit that cuts more than a third of it is refused.
+The opening, which names the title and authors, and the goodbye are written by the
+program. Numbers and acronyms are then written out as they are said.
+
+Beside the script go `script.txt.review.md`, which puts each of A's lines beside its
+passage for a quick read against the source and marks any line that copies more than eight
+words in a row from its passage (a line copying more than twelve is rewritten; `--max-copied
+N` sets the limit, and 0 only reports), `script.txt.check.json`, and
+`script.txt.calls.json`, which gives the tokens and time of every model call. The checks
+are made by the same kind of model that wrote the script, so read the review sheet
+against the source before an episode is shared.
 
 `podcast` renders the script with MOSS-TTSD, copying two reference voices kept in
 `~/models/podcast/voices` (`host_a.wav` and `host_b.wav`, each with its words in a `.txt`
@@ -106,7 +127,7 @@ model misreads can also go in `~/models/podcast/say.txt`, one `WORD=SPOKEN` per 
 - macOS with Apple Silicon (M1 or later). Other platforms fall back to the PyTorch build of Kokoro.
 - Python 3.10–3.12
 - `espeak-ng` and `ffmpeg` via Homebrew
-- For `--explain-equations` and `podcast-script`: [Ollama](https://ollama.com) with `qwen3.5:35b-a3b` (`ollama pull qwen3.5:35b-a3b`, about 23 GB)
+- For `--explain-equations`: [Ollama](https://ollama.com) with `qwen3.5:35b-a3b` (`ollama pull qwen3.5:35b-a3b`, about 23 GB). For `podcast-script`: `qwen3.5:27b-mxfp8` (`ollama pull qwen3.5:27b-mxfp8`, about 30 GB, run on Ollama's MLX engine), or another model with `--model`
 
 ## How it works
 
