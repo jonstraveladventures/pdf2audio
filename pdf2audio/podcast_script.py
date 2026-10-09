@@ -27,7 +27,8 @@ Every line is checked. A line is faulty if:
   - a BACKGROUND line names a term the source does not use or one an earlier section
     explained, holds a number or name, says what the document or its authors found, or is
     the third in the section;
-  - B says a number, scale word or name A has not said;
+  - B says a number, scale word or name A has not said, or gives A's number in another unit
+    (per cent for A's percentage points);
   - the model, asked about each line on its own, finds an A line its passage does not
     support, an A line with no passage that says something about the document, a
     BACKGROUND line that is not general knowledge, or a B line that brings in something new.
@@ -850,18 +851,73 @@ def said(word, words):
     return w in words or w + "s" in words or w.rstrip("s") in words or w.removesuffix("'s") in words
 
 
+WORD_VALUE = {w: i for i, w in enumerate(ONES)} | {w: 10 * i for i, w in enumerate(TENS) if w != "_"}
+UNITS = [("percentage points", r"pp\b|percentage[ -]points?\b"), ("per cent", r"%|per ?cent\b"),
+         ("times", r"×|x\b|times\b|-?fold\b")]
+
+
+def word_number(words):
+    """The value of number words ("eighty-eight", "two point four", "a hundred"), or None."""
+    from decimal import Decimal
+
+    whole, frac, seen, point = 0, "", False, False
+    for w in words:
+        if point:
+            if w not in WORD_VALUE or WORD_VALUE[w] > 9:
+                return None
+            frac += str(WORD_VALUE[w])
+        elif w == "point":
+            point = True
+        elif w == "hundred":
+            whole = (whole or 1) * 100
+        elif w in WORD_VALUE:
+            whole, seen = whole + WORD_VALUE[w], True
+        elif w not in ("a", "and"):
+            return None
+    if not (seen or whole) or (point and not frac):
+        return None
+    return norm_number(str(Decimal(f"{whole}.{frac}" if frac else str(whole))))
+
+
+def quantities(text):
+    """Each number the text gives with a unit (percentage points, per cent, times), in digits or in words,
+    as (value, unit)."""
+    words = "|".join(sorted(WORD_VALUE, key=len, reverse=True)) + "|hundred|point"
+    number = rf"{NUM}|(?:\b(?:a|{words})\b(?:[ -](?:and[ ])?(?:{words})\b)*)"
+    out = []
+    for m in re.finditer(rf"(?i)({number})\s*(?:{'|'.join(f'(?P<u{k}>{u})' for k, (_, u) in enumerate(UNITS))})", text):
+        raw = m.group(1).lower()
+        value = norm_number(raw) if re.fullmatch(NUM, raw) else word_number(re.split(r"[ -]+", raw))
+        unit = next(UNITS[k][0] for k in range(len(UNITS)) if m.group(f"u{k}"))
+        if value is not None:
+            out.append((value, unit))
+    return out
+
+
 def b_faults(turns, so_far_lines):
     """For each B line with a number or name not said before it, the reason."""
     numbers, words = heard(so_far_lines)
+    units = {}  # each value A has given with a unit, and the units A gave it in
+    for line in so_far_lines:
+        if line.startswith("A: "):
+            for v, u in quantities(line[3:]):
+                units.setdefault(v, set()).add(u)
     faults = {}
     for i, (h, t) in enumerate(turns):
         if h == "B":
+            changed = [f"{v} {u} (A said {v} {' or '.join(sorted(units[v]))})" for v, u in quantities(t)
+                       if v in units and u not in units[v]]
+            if changed:
+                faults[i] = [f"B says {', '.join(changed)}: B restates A's figures in A's units"]
             new = [x for x, v in number_values(t) if v not in numbers and bare_number(x) not in numbers]
             new += [w for w in sorted(scale_words(t), key=SCALE.get) if w not in words]
             new += [w for w in names_in(t) if not said(w, words)]
             if new:
-                faults[i] = [f"B says {', '.join(new)} before A has; B only asks and restates what A has said"]
+                faults.setdefault(i, []).append(f"B says {', '.join(new)} before A has; B only asks and restates "
+                                                "what A has said")
         else:
+            for v, u in quantities(t):
+                units.setdefault(v, set()).add(u)
             numbers |= numbers_of(t)
             words |= scales_in(t)
         words |= spoken_words(t)
