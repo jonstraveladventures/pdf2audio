@@ -45,7 +45,7 @@ out as they should be said.
 
 Beside the script go <script>.review.md (each line of A's beside its passage, with any
 check that failed and any long copied run), <script>.check.json (each section's checks) and <script>.calls.json
-(tokens and time for each model call). The exit code is non-zero if any section still
+(tokens and time for each model call, and its reply). The exit code is non-zero if any section still
 fails. The checks are made by the same kind of model that wrote the script; reading the
 review sheet against the source is still the way to be sure of an episode.
 """
@@ -323,6 +323,8 @@ def chat(model, prompt, label, think=True, num_predict=16384, temperature=0.7, t
                 done_reason=reply.get("done_reason", ""))
     if label.startswith("check"):
         call.update(asked=prompt.split("\n>>>\n\n", 1)[-1][-4000:], reply=content[:300])
+    else:
+        call.update(reply=content)  # the whole reply, so a run shows what the parser was given
     with _calls_lock:
         CALLS.append(call)
     return content
