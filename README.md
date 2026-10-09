@@ -84,10 +84,11 @@ resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
 between two hosts, written by a local model through Ollama. The model plans the episode in
 sections and writes each one, asked for no less than four fifths of its planned length. Host A explains, and each of A's lines carries the passage
 of the source it rests on, which must be in the source word for word and hold every
-number A says; the passage is not spoken, so A explains in its own words. A may also
+number A says, with a number of the right size for any thousand, million, billion or
+trillion; the passage is not spoken, so A explains in its own words. A may also
 explain a general term the source uses (what a sigmoid is) in a background line, at most
 two a section, with no numbers or names and nothing the source's authors found. Host B only asks and restates, and may not say a
-number or name before A has. The model then checks each line on its own: A's against its
+number, scale word or name before A has. The model then checks each line on its own: A's against its
 passage, B's against the conversation before it, and an A line with no passage for whether
 it says anything about the source. A faulty line is rewritten on its own, up
 to twice, with its faults pointed out (a passage not in the source is answered with the

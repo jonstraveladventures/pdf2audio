@@ -10,21 +10,24 @@ episode as sections and reads off the title and authors; the opening, which name
 and the goodbye are written by this program, not the model. Each section is then written
 as a conversation, asked for its planned length and no less than four fifths of it: host A
 explains, and every line of A's that states anything carries the passage of the source it
-rests on, which is not spoken; host B only asks and restates what A has said. A may also
+rests on, which is not spoken (a SOURCE or BACKGROUND the model writes on the line itself is
+read as if on its own line); host B only asks and restates what A has said. A may also
 explain a general term the source uses but does not explain (what a sigmoid is) in a
 BACKGROUND line, at most two in a section, with no numbers or names.
 
 Every line is checked. A line is faulty if:
-  - a number or name is not in the source, or a symbol is left that cannot be spoken;
+  - a number, a scale word (thousand, million, billion, trillion) or a name is not in the
+    source, or a symbol is left that cannot be spoken;
   - a passage A cites is not word for word in the source (spacing aside, and a bracketed
-    aside of the paper's sentence may be left out), lacks a number A says, or comes from a
-    sentence of the source an earlier section cited;
+    aside of the paper's sentence may be left out), lacks a number A says, gives no number
+    of the size of a scale word A says ("a million times" for "five orders of magnitude"),
+    or comes from a sentence of the source an earlier section cited;
   - an A line copies more than 12 words in a row from its passage (--max-copied N to
     change; 0 only measures and reports it);
   - a BACKGROUND line names a term the source does not use or one an earlier section
     explained, holds a number or name, says what the document or its authors found, or is
     the third in the section;
-  - B says a number or name A has not said;
+  - B says a number, scale word or name A has not said;
   - the model, asked about each line on its own, finds an A line its passage does not
     support, an A line with no passage that says something about the document, a
     BACKGROUND line that is not general knowledge, or a B line that brings in something new.
@@ -411,9 +414,58 @@ def norm_number(tok):
     return tok.rstrip("0").rstrip(".") if "." in tok else tok
 
 
+SCALE = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12}
+SUFFIX = {"K": 3, "M": 6, "B": 9, "T": 12}
+SCALE_NAME = {e: w for w, e in SCALE.items()}
+
+
+def scale_words(text):
+    """The scale words (thousand, million, billion, trillion) a text says, in words or as a suffix ("50T")."""
+    found = {w.lower() for w in re.findall(r"\b(thousand|million|billion|trillion)s?\b", text, re.I)}
+    return found | {SCALE_NAME[SUFFIX[s]] for s in re.findall(r"\b\d+(?:\.\d+)?([KMBT])\b", text)}
+
+
+def scales_in(text):
+    """The scales a text gives in any form: in words, as a suffix, as a power of ten ("10^6", "10⁶"),
+    or by the size of a number ("1,200,000" gives million). "Five orders of magnitude" gives none."""
+    found = scale_words(text)
+    powers = re.findall(r"10\s*\^\s*\(?(\d+)\)?", text)
+    powers += [p.translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")) for p in re.findall(r"10([⁰¹²³⁴⁵⁶⁷⁸⁹]+)", text)]
+    found |= {SCALE_NAME[int(p) // 3 * 3] for p in powers if 3 <= int(p) < 15}
+    for tok in re.findall(NUM, text):
+        digits = len(tok.replace(",", "").split(".")[0].lstrip("0"))
+        if 4 <= digits < 16:
+            found.add(SCALE_NAME[(digits - 1) // 3 * 3])
+    return found
+
+
+def number_values(text):
+    """Each number in the text as written, with its value as compared: "1.2 million" and "50T" by their full
+    value, so that they match the source's "1,200,000" and "50 trillion"."""
+    from decimal import Decimal
+
+    out = []
+    for m in re.finditer(rf"({NUM})(?:\s*((?i:thousand|million|billion|trillion))s?\b|([KMBT])\b)?", text):
+        tok, word, suffix = m.groups()
+        power = SCALE[word.lower()] if word else SUFFIX.get(suffix, 0)
+        value = format(Decimal(tok.replace(",", "")).scaleb(power).normalize(), "f")
+        out.append((m.group(0), norm_number(value)))
+    return out
+
+
+def bare_number(tok):
+    """The number at the start of a token of number_values, without its scale ("1.2 million" gives 1.2)."""
+    return norm_number(re.match(NUM, tok).group(0))
+
+
+def numbers_of(text):
+    """The numbers a text gives, both as written and at their full value."""
+    return {bare_number(x) for x, _ in number_values(text)} | {v for _, v in number_values(text)}
+
+
 def source_terms(source):
-    numbers = {norm_number(t) for t in re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", source)}
-    words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'À-ɏ-]*", source)}
+    numbers = numbers_of(source)
+    words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'À-ɏ-]*", source)} | scales_in(source)
     return numbers, words
 
 
@@ -424,10 +476,11 @@ def unsupported(turns, numbers, words):
     """Numbers and capitalised names in the dialogue that the source does not contain."""
     missing = []
     for _, text in turns:
-        for tok in re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", text):
-            n = norm_number(tok)
-            if n not in numbers and n.lstrip("0") not in numbers:
+        for tok, value in number_values(text):
+            n = bare_number(tok)
+            if n not in numbers and n.lstrip("0") not in numbers and value not in numbers:
                 missing.append(tok)
+        missing += [w for w in scale_words(text) if w not in words]
         for sentence in re.split(r"(?<=[.!?])\s+", text):
             toks = re.findall(r"[A-Za-z][A-Za-z'À-ɏ-]*", sentence)
             for tok in toks[1:]:
@@ -541,19 +594,26 @@ def parse_cited(reply):
     turns, quotes, bg = [], [], []
     for line in reply.splitlines():
         line = line.strip().replace("**", "")
+        tags = [line]
         m = re.match(r"^(?:Host\s+)?([AB])\s*:\s*(.+)$", line)
         if m:
-            turns.append((m.group(1), m.group(2).strip()))
-            quotes.append([])
-            bg.append(None)
-            continue
-        m = re.match(r"^(SOURCE|BACKGROUND)\s*:\s*(.+)$", line, re.I)
-        if m and turns:
-            text = m.group(2).strip().strip("\"“”'‘’").strip()
-            if m.group(1).upper() == "SOURCE":
-                quotes[-1].append(text)
-            else:
-                bg[-1] = text
+            # A SOURCE or BACKGROUND written on the turn's own line is read as if it were on its own line.
+            body = m.group(2).strip()
+            at = [t.start() for t in re.finditer(r"\b(?:SOURCE|BACKGROUND)\s*:", body)]
+            parts = [body[a:b].strip() for a, b in zip([0] + at, at + [len(body)])]
+            tags = parts[1:]
+            if parts[0]:
+                turns.append((m.group(1), parts[0]))
+                quotes.append([])
+                bg.append(None)
+        for tag in tags:
+            m = re.match(r"^(SOURCE|BACKGROUND)\s*:\s*(.+)$", tag, re.I)
+            if m and turns:
+                text = m.group(2).strip().strip("\"“”'‘’").strip()
+                if m.group(1).upper() == "SOURCE":
+                    quotes[-1].append(text)
+                else:
+                    bg[-1] = text
     return turns, quotes, bg
 
 
@@ -646,7 +706,7 @@ def nearest_sentence(passage, src_norm):
 
 def states_something(text):
     """Whether an A line needs a SOURCE: anything longer than a short bridge, or holding a number or name."""
-    if re.search(r"\d", text) or len(text.split()) > 8:
+    if re.search(r"\d", text) or scale_words(text) or len(text.split()) > 8:
         return True
     for sentence in re.split(r"(?<=[.!?])\s+", text):
         toks = re.findall(r"[A-Za-z][A-Za-z'À-ɏ-]*", sentence)
@@ -737,10 +797,14 @@ def cite_faults(turns, quotes, bg, src_norm, max_copied=0, used=(), explained=()
                            + (f'; the nearest sentence in the document is: "{" ".join(near.split()[:80])}"'
                               if near else ""))
             else:
-                have = {norm_number(x) for q in qs for x in re.findall(NUM, q)}
-                extra = [x for x in re.findall(NUM, t) if norm_number(x) not in have]
+                have = set().union(*(numbers_of(q) for q in qs))
+                extra = [x for x, v in number_values(t) if v not in have and bare_number(x) not in have]
                 if extra:
                     why.append(f"it says numbers its SOURCE does not hold: {', '.join(extra)}")
+                sizes = sorted(scale_words(t) - set().union(*(scales_in(q) for q in qs)), key=SCALE.get)
+                if sizes:
+                    why.append(f"it says {', '.join(sizes)}, a size its SOURCE does not give: give the size as the "
+                               "SOURCE gives it")
                 run = copied_run(t, qs)
                 if max_copied and run > max_copied:
                     why.append(f"it copies {run} words in a row from its SOURCE; say it in A's own words, taking "
@@ -766,7 +830,8 @@ def heard(lines):
     for line in lines:
         h, _, text = line.partition(": ")
         if h == "A":
-            numbers |= {norm_number(x) for x in re.findall(NUM, text)}
+            numbers |= numbers_of(text)
+            words |= scales_in(text)
         words |= spoken_words(text)
     return numbers, words
 
@@ -789,12 +854,14 @@ def b_faults(turns, so_far_lines):
     faults = {}
     for i, (h, t) in enumerate(turns):
         if h == "B":
-            new = [x for x in re.findall(NUM, t) if norm_number(x) not in numbers]
+            new = [x for x, v in number_values(t) if v not in numbers and bare_number(x) not in numbers]
+            new += [w for w in sorted(scale_words(t), key=SCALE.get) if w not in words]
             new += [w for w in names_in(t) if not said(w, words)]
             if new:
                 faults[i] = [f"B says {', '.join(new)} before A has; B only asks and restates what A has said"]
         else:
-            numbers |= {norm_number(x) for x in re.findall(NUM, t)}
+            numbers |= numbers_of(t)
+            words |= scales_in(t)
         words |= spoken_words(t)
     return faults
 
