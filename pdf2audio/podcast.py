@@ -9,12 +9,13 @@ into parts only at section marks; a short tail joins the part before it. "[laugh
 symbols as they should be said.
 
 Voices: two fixed synthetic voices in ~/models/podcast/voices (host_a.wav and
-host_b.wav, each with its exact words in a .txt beside it), which MOSS-TTSD copies.
+host_b.wav, each with its exact words in a .txt beside it), which MOSS-TTSD copies;
+--voices DIR takes them from another folder laid out the same way.
 
 Each part of about ten minutes is rendered in one pass and checked before it is used:
 transcribed locally with whisper and compared with its script, and diarised to confirm
-two voices. A part that fails is rendered again with a new seed, up to twice. The duller
-host's turns are then brightened and set slightly louder than the other's, the parts
+two voices. A part that fails is rendered again with a new seed, up to twice. A host
+clearly duller than the other then has its turns brightened and set slightly louder, the parts
 are joined, and the episode is levelled to -16 LUFS. Work goes in <output>.parts/, so a
 rerun reuses parts that already passed. The exit code is non-zero if any part failed.
 """
@@ -53,6 +54,8 @@ def load_say(path=SAY_FILE):
 MAX_WER = 0.08
 PAUSE_S = 1.0
 PRESENCE_DB, OFFSET_DB = 6.0, 2.0  # chosen by ear, 2026-10-06
+PRESENCE_GAP_DB = 3.0  # the duller host is brightened only when this much duller than the other
+REF_GAP_DB = 6.4  # the presence gap between the voices PRESENCE_DB was chosen for; a smaller gap gets a smaller boost
 
 
 def log(msg):
@@ -278,7 +281,8 @@ def check(x, sr, wav, turns):
 # ---------- voice fix ----------
 
 def fix_voices(x, sr, segs):
-    """Brighten the duller host's turns and set them OFFSET_DB above the other host."""
+    """Brighten the duller host's turns and set them OFFSET_DB above the other host, when the duller host's
+    presence is more than PRESENCE_GAP_DB below the other's; voices about as bright as each other are left alone."""
     from scipy.signal import sosfiltfilt
 
     spans = {}
@@ -290,25 +294,38 @@ def fix_voices(x, sr, segs):
     clip = lambda sig, h: np.concatenate([sig[s:e] for s, e in spans[h]])
     pres = {h: presence(clip(x, h), sr) for h in hosts}
     dull, other = sorted(hosts, key=lambda h: pres[h])
+    if pres[other] - pres[dull] <= PRESENCE_GAP_DB:
+        return x, dict(skipped=f"presence gap {pres[other] - pres[dull]:.1f} dB", presence_before=round(pres[dull], 1),
+                       presence_other=round(pres[other], 1))
     mask = np.zeros_like(x)
     for s, e in spans[dull]:
         mask[s:e] = 1.0
     ramp = int(0.03 * sr)
     kernel = np.hanning(2 * ramp + 1)
     mask = np.clip(np.convolve(mask, kernel / kernel.sum(), mode="same"), 0, 1)
-    sos = np.vstack([biquad("peak", 3000, PRESENCE_DB, 0.9, sr), biquad("high", 6000, 3.0, 0.7, sr),
+    k = min(1.0, (pres[other] - pres[dull]) / REF_GAP_DB)
+    sos = np.vstack([biquad("peak", 3000, k * PRESENCE_DB, 0.9, sr), biquad("high", 6000, k * 3.0, 0.7, sr),
                      biquad("low", 180, -2.0, 0.7, sr)])
     bright = compress(sosfiltfilt(sos, x), sr)
     bright *= 10 ** ((loudness(clip(x, other), sr) + OFFSET_DB - loudness(clip(bright, dull), sr)) / 20)
     y = (1 - mask) * x + mask * bright
-    return y, dict(presence_before=round(pres[dull], 1), presence_other=round(pres[other], 1),
+    return y, dict(boost=round(k, 2), presence_before=round(pres[dull], 1), presence_other=round(pres[other], 1),
                    presence_after=round(presence(clip(y, dull), sr), 1))
 
 
 # ---------- rendering ----------
 
+def voices_digest(voices):
+    """A fingerprint of the two reference clips and their words, so parts rendered with other voices are not reused."""
+    h = hashlib.sha256()
+    for k in ("a", "b"):
+        for ext in ("wav", "txt"):
+            h.update((voices / f"host_{k}.{ext}").read_bytes())
+    return h.hexdigest()[:16]
+
+
 class Moss:
-    def __init__(self):
+    def __init__(self, voices=VOICES):
         import torch
         import torchaudio
         from transformers import AutoModel, AutoProcessor
@@ -321,10 +338,10 @@ class Moss:
         self.sr = int(self.proc.model_config.sampling_rate)
         wavs, self.ref_text = [], {}
         for k in ("a", "b"):
-            x, sr = read_wav(VOICES / f"host_{k}.wav")
+            x, sr = read_wav(voices / f"host_{k}.wav")
             w = torch.from_numpy(x.astype(np.float32)).unsqueeze(0)
             wavs.append(torchaudio.functional.resample(w, sr, self.sr) if sr != self.sr else w)
-            self.ref_text[k] = (VOICES / f"host_{k}.txt").read_text().strip()
+            self.ref_text[k] = (voices / f"host_{k}.txt").read_text().strip()
         self.ref_codes = self.proc.encode_audios_from_wav(wavs, sampling_rate=self.sr)
         self.prompt = self.proc.encode_audios_from_wav([torch.cat(wavs, dim=-1)], sampling_rate=self.sr)[0]
 
@@ -363,7 +380,14 @@ def main():
     ap.add_argument("-o", "--output", required=True, help="episode file (.m4a, .mp3, .wav or .flac)")
     ap.add_argument("--part-words", type=int, default=1600, help="words per part, about ten minutes (default 1600)")
     ap.add_argument("--say", action="append", default=[], metavar="WORD=SPOKEN", help="respell a word, e.g. Nguyen=Win")
+    ap.add_argument("--voices", type=Path, default=VOICES, metavar="DIR",
+                    help=f"folder holding host_a.wav, host_a.txt, host_b.wav and host_b.txt (default {VOICES})")
     a = ap.parse_args()
+    voices = a.voices.expanduser().resolve()
+    missing = [f"host_{k}.{e}" for k in "ab" for e in ("wav", "txt") if not (voices / f"host_{k}.{e}").is_file()]
+    if missing:
+        ap.error(f"{voices} has no {', '.join(missing)}")
+    voice_id = voices_digest(voices)
 
     out = Path(a.output).expanduser().resolve()
     work = out.with_name(out.name + ".parts")
@@ -377,7 +401,7 @@ def main():
     for i, turns in enumerate(parts, 1):
         text = moss_text(turns, say)
         words = sum(len(t.split()) for _, t in turns)
-        digest = hashlib.sha256((text + json.dumps(say, sort_keys=True)).encode()).hexdigest()[:16]
+        digest = hashlib.sha256((text + json.dumps(say, sort_keys=True) + voice_id).encode()).hexdigest()[:16]
         raw, info_path = work / f"part{i:02d}.wav", work / f"part{i:02d}.json"
         info = json.loads(info_path.read_text()) if info_path.exists() else {}
         if raw.exists() and info.get("digest") == digest and not info.get("problems"):
@@ -385,7 +409,7 @@ def main():
             x, sr = read_wav(raw)
             segs = [tuple(s) for s in info["segments"]]
         else:
-            moss = moss or Moss()
+            moss = moss or Moss(voices)
             sr = moss.sr
             best = None
             for attempt in range(3):

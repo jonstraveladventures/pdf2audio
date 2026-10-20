@@ -127,9 +127,14 @@ against the source before an episode is shared.
 `~/models/podcast/voices` (`host_a.wav` and `host_b.wav`, each with its words in a `.txt`
 beside it). Each part of about ten minutes is transcribed back with whisper, diarised to
 confirm two voices, and rendered again if it fails.
+`--voices DIR` uses the two reference voices from another folder with the same
+layout. If one host's voice has more than 3 dB less energy between 2 and 5 kHz than
+the other's, that host's turns are brightened, by an amount scaled to the difference,
+and made slightly louder.
 
 ```bash
 podcast-script paper.pdf -o script.txt --minutes 15
+podcast-script paper.pdf -o checked.txt --draft draft.txt
 podcast script.txt -o episode.m4a --say Nguyen=Win
 ```
 
