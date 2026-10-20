@@ -102,9 +102,13 @@ def rebuild(chunk, page):
     # The text column: where rows of real prose start and end. Margin line numbers,
     # digits left of the column, are dropped.
     full = [r for r in rows if len(" ".join(s["text"] for s in r["spans"]).split()) >= 8]
-    if not full:
+    # A row of numbers alone (a table row) has no prose to take the column's edge from.
+    starts = [min((s["bbox"][0] for s in r["spans"] if not s["text"].strip().isdigit()), default=None)
+              for r in full]
+    starts = [round(x) for x in starts if x is not None]
+    if not starts:
         return chunk
-    left = Counter(round(min(s["bbox"][0] for s in r["spans"] if not s["text"].strip().isdigit())) for r in full).most_common(1)[0][0]
+    left = Counter(starts).most_common(1)[0][0]
     right = max(max(s["bbox"][2] for s in r["spans"]) for r in full)
     if right - left < 0.5 * page.rect.width:
         return chunk  # two columns

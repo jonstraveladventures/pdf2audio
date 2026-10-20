@@ -82,7 +82,7 @@ resamples from Kokoro's native 24 kHz. A batch file is JSON (a list of
 
 `podcast-script` turns a document (LaTeX, PDF, Markdown or text) into a conversation
 between two hosts, written by a local model through Ollama. The model plans the episode in
-sections and writes each one, asked for no less than four fifths of its planned length. Host A explains, and each of A's lines carries the passage
+sections of about 250 words (nine for 15 minutes) and writes each one, asked for no less than four fifths of its planned length. Host A explains, and each of A's lines carries the passage
 of the source it rests on, which must be in the source word for word and hold every
 number A says, with a number of the right size for any thousand, million, billion or
 trillion; the passage is not spoken, so A explains in its own words. A may also

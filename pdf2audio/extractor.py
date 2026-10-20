@@ -78,6 +78,23 @@ _APPENDIX = re.compile(
 )
 
 
+# No appendix starts this early; a title set in capitals ("... A CONTINUAL LEARNING
+# PROBLEM ...") looks like an appendix heading and must not end the paper.
+_MIN_WORDS_BEFORE_APPENDIX = 1000
+
+
+def cut_appendices(text):
+    """The text up to its first appendix heading after the first 1,000 words. A match after a
+    section number on the same line ("2 A FORMAL MODEL") is a numbered section, not an appendix."""
+    for m in _APPENDIX.finditer(text):
+        before = text[: m.start()]
+        if re.search(r"\d+(?:\.\d+)*\.?[ \t]+$", before):
+            continue
+        if len(before.split()) >= _MIN_WORDS_BEFORE_APPENDIX:
+            return before
+    return text
+
+
 # A table or figure caption; manuscripts often put these after the references.
 _CAPTION = re.compile(r"^(?:\*\*)?(?:Table|Figure|Fig\.)\s*\d+", re.MULTILINE)
 
@@ -334,9 +351,7 @@ def extract_and_clean(
     )
     if skip_appendices:
         # Before explaining equations, so none is spent on the appendices.
-        appendix = _APPENDIX.search(cleaned)
-        if appendix:
-            cleaned = cleaned[: appendix.start()]
+        cleaned = cut_appendices(cleaned)
 
     explanations = {}
     if explain_equations and not skip_equations:

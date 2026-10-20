@@ -6,7 +6,8 @@
 The source can be LaTeX (a .tex file, or a folder holding one, as arXiv supplies), a PDF,
 Markdown or plain text; prefer LaTeX where there is a choice, since PDF text loses
 superscripts and scrambles author blocks. A local model (through Ollama) first plans the
-episode as sections and reads off the title and authors; the opening, which names them,
+episode as sections of about 250 words, the length the writer produces (asked for longer,
+it still writes about 250), and reads off the title and authors; the opening, which names them,
 and the goodbye are written by this program, not the model. Each section is then written
 as a conversation, asked for its planned length and no less than four fifths of it: host A
 explains, and every line of A's that states anything carries the passage of the source it
@@ -54,6 +55,7 @@ import argparse
 import functools
 import json
 import re
+import string
 import sys
 import threading
 import time
@@ -70,6 +72,7 @@ REPAIR_ROUNDS = 2  # repairs of a faulty line within one write
 # Only the plan is made with thinking: it used nearly all the output of the writing calls,
 # 7 to 15 minutes each, and once the whole allowance with no reply (2026-10-07).
 WORDS_PER_MINUTE = 150
+SECTION_WORDS = 250  # the length the writer produces for a section; asked for 350 to 400, it averaged 250
 NUM_CTX = 40960  # the same for every call: a change makes Ollama reload the model
 NUM = r"\d+(?:,\d{3})*(?:\.\d+)?"
 
@@ -124,7 +127,7 @@ A: Because at sunset the light comes through far more air, so most of the blue h
 SOURCE: At sunset, light crosses far more air, and most of the blue is scattered out before it reaches the observer."""
 
 PLAN = """Plan a two-host podcast episode of about {words} words in total about the \
-document. Plan between 4 and 8 sections that take a listener from what the document is \
+document. Plan {sections} sections of about {section_words} words each that take a listener from what the document is \
 and why it matters, through its substance in a sensible order, to what it concludes. Give \
 each section a short title, a word budget, and the specific points it must cover, each \
 stated as the document states it, with numbers in digits. Give each point to one section \
@@ -136,7 +139,7 @@ gives none).
 
 Reply with only a JSON object:
 {{"title": "...", "authors": [{{"name": "...", "affiliation": "..."}}],
- "sections": [{{"title": "...", "words": 300, "points": ["...", "..."]}}]}}"""
+ "sections": [{{"title": "...", "words": {section_words}, "points": ["...", "..."]}}]}}"""
 
 WRITE = """Write one section of the episode: about {words} words of conversation, and no fewer \
 than {min_words}, covering these points:
@@ -1121,6 +1124,11 @@ def frame(meta, src_norm):
     if title and not in_block(title, src_norm):
         log(f"title not found in the source, left out: {title}")
         title = ""
+    # A title printed over two lines comes as two lines, or two markdown headings; one in capitals
+    # would be spelled out letter by letter, so it is said in ordinary case.
+    title = re.sub(r"\s+", " ", re.sub(r"(?m)^\s*#+\s*", "", title)).strip()
+    if title and not re.search(r"[a-z]", title):
+        title = string.capwords(title.lower())
     authors = []
     for a in meta.get("authors") or []:
         # The paper's author block can carry line breaks and footnote marks ("Smith[1]").
@@ -1159,7 +1167,8 @@ def closing_after(last_host, closing):
 
 def plan(ctx, words):
     for _ in range(3):
-        reply = chat(ctx.model, ctx.prefix + PLAN.format(words=words), "plan")
+        reply = chat(ctx.model, ctx.prefix + PLAN.format(words=words, sections=max(3, round(words / SECTION_WORDS)),
+                                                          section_words=SECTION_WORDS), "plan")
         log(describe(CALLS[-1]))
         m = re.search(r"\{.*\}", reply, re.DOTALL)
         try:
@@ -1222,7 +1231,7 @@ def write_section(ctx, section, i, n, previous, so_far_lines, covered, later=())
     cov += ("Later sections will cover these points; leave them to those sections:\n"
             + "\n".join(f"- {p}" for p in later) + "\n") if later else ""
     cov += taken_text(ctx)
-    feedback, best, budget = "", None, int(section.get("words", 300))
+    feedback, best, budget = "", None, int(section.get("words", SECTION_WORDS))
     label = f"section {i + 1}/{n}"
     for attempt in range(ATTEMPTS):
         reply = chat(ctx.model, ctx.prefix + WRITE.format(words=budget, min_words=int(budget * 0.8), points=points,
