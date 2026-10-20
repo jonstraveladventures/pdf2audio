@@ -102,6 +102,19 @@ edited; an edit that cuts more than a third of it is refused.
 The opening, which names the title and authors, and the goodbye are written by the
 program. Numbers and acronyms are then written out as they are said.
 
+`--draft script.txt` checks a script written by another tool or by hand instead of
+writing one. It uses the output format: `A: ...` for the host who explains, `B: ...`
+for the host who asks, and `#` lines for sections. The model receives each section's
+lines numbered and identifies, by number, the passage behind each of A's lines.
+Every line is then checked, repaired and edited as above. Repairs keep each line
+about its original length. For a line with no passage, the model is given the three
+sentences of the source nearest to it. The draft keeps its own opening and goodbye.
+
+Add `--both-explain` when both hosts make points. Every line by either host that
+states something is then cited and checked. A reaction or restatement with no
+passage is checked against the conversation before it. Any line still faulty after
+repairs is left out.
+
 Beside the script go `script.txt.review.md`, which puts each of A's lines beside its
 passage for a quick read against the source and marks any line that copies more than eight
 words in a row from its passage (a line copying more than twelve is rewritten; `--max-copied

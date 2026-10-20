@@ -45,6 +45,22 @@ kept only if it passes the same checks, cuts no more than a third of the section
 keeps the numbers of the section's planned points. Numbers and acronyms are then written
 out as they should be said.
 
+With --draft SCRIPT, a script written elsewhere (another tool, or by hand) is checked instead
+of one being written: lines "A: ..." and "B: ..." with A as the host who explains, sections
+marked "# title". For each section the model is given the lines numbered and answers by
+number with the passage behind each of A's lines (a misquoted passage that shares six words
+in a row with one sentence of the source is taken as that sentence). The lines are then
+checked, repaired and edited as above, with no limit on how many are repaired, since a draft
+section is not written again; a repair is asked to keep the line's length, a line with no
+passage is shown the three source sentences nearest to it, and a repaired line that states
+something but cites nothing is cited on its own. The draft's own opening and goodbye are kept
+and checked like any other line. With --both-explain as well, either host may state what the
+document says: every line of either host that states something is cited and checked as A's
+are. A line with no passage, and no number, size or name the section has not already said, is
+checked as conversation, which lets a reaction, a restatement or a question pass; a question
+with no number, size or name cites nothing. A line still faulty after its repairs is dropped,
+and the same host's turns either side of it are joined.
+
 Beside the script go <script>.review.md (each line of A's beside its passage, with any
 check that failed and any long copied run), <script>.check.json (each section's checks) and <script>.calls.json
 (tokens and time for each model call, and its reply). The exit code is non-zero if any section still
@@ -171,11 +187,10 @@ nothing about the document's own work or results; it holds no numbers and no nam
 EDIT = """Edit one section of the episode before it is recorded. Correct the draft \
 section in these ways and change nothing else:
 
-1. Delete or correct any statement by A that its SOURCE does not make: a comparison, \
+1. Delete or correct any statement by {stater} that its SOURCE does not make: a comparison, \
 ranking, judgement, consequence or prediction it does not state, or a generalisation of one \
 case (one model becoming "models", one topic becoming "topics").
-2. B only asks and restates: delete or rephrase any B line that brings in a fact, number, \
-name, example or judgement A has not said.
+2. {rule2}
 3. Delete any point already made earlier in this section or in the episode so far, except \
 a short echo.
 4. Where an equation or derivation is read out symbol by symbol, replace it with one or \
@@ -184,10 +199,10 @@ two sentences saying in words what it means.
 the work.
 
 Leave every line that needs none of these changes exactly as it is, with its SOURCE or \
-BACKGROUND line. Keep each SOURCE or BACKGROUND line under the A line it belongs to; if you \
-change an A line it must still say only what its SOURCE says (or, for a BACKGROUND line, \
-explain the term in general and nothing about the document's work), and if you delete an A \
-line, delete its SOURCE or BACKGROUND line too. Keep \
+BACKGROUND line. Keep each SOURCE or BACKGROUND line under the {the_line} it belongs to; if you \
+change {a_line} it must still say only what its SOURCE says (or, for a BACKGROUND line, \
+explain the term in general and nothing about the document's work), and if you delete {a_line}, \
+delete its SOURCE or BACKGROUND line too. Keep \
 the exchange whole: when you delete a question, delete or rephrase the answer that depends \
 on it, and when you delete an answer, delete its question. The hosts alternate; never leave \
 one host speaking twice in a row. You may add a short bridging line where a deletion leaves \
@@ -206,7 +221,7 @@ The draft section:
 
 CHECK_A = """Check one line of the script against the document.
 
-The line, spoken by host A: "{line}"
+The line, spoken by host {host}: "{line}"
 The passage of the document it is based on: "{quote}"
 
 Does the document, at that passage, state everything the line says? The line fails if it \
@@ -234,7 +249,7 @@ The lines after it:
 Its faults:
 {faults}
 
-{rules}
+{rules}{length}
 Reply with only the rewritten line, starting "{host}: "."""
 
 REPAIR_RULES = {
@@ -248,7 +263,13 @@ says nothing about the document's own work. A short line that states nothing nee
 or judgement that A has not said. A B line has no SOURCE line.""",
 }
 
-CHECK_BG = """Check one line in which host A explains a general term the document uses: \
+def repair_rules(host):
+    if host != "A" and host in CITED:
+        return REPAIR_RULES["A"].replace("An A line", f"A {host} line").replace("A's own words", f"{host}'s own words")
+    return REPAIR_RULES[host]
+
+
+CHECK_BG = """Check one line in which host {host} explains a general term the document uses: \
 "{term}".
 
 The line: "{line}"
@@ -257,19 +278,36 @@ Is the line a correct general explanation of the term, which says nothing about 
 document's own work, results or claims? Reply with one word, GENERAL or FAILS, then a colon \
 and at most one sentence of reason."""
 
-CHECK_LINK = """Check one line spoken by host A that cites no passage of the document.
+CHECK_LINK = """Check one line spoken by host {host} that cites no passage of the document.
 
 The conversation just before it:
 <<<
 {context}
 >>>
-A's line: "{line}"
+{host}'s line: "{line}"
 
 A line that only links the conversation passes: agreeing, answering yes or no, or naming \
 the next topic without saying anything about it. A line that says anything about the \
 document's work, its methods, results, claims or conclusions, fails, since such a line \
-needs a passage. Reply with one word, LINK or CLAIM, then a colon and at most one sentence \
+needs a passage.{asks} Reply with one word, LINK or CLAIM, then a colon and at most one sentence \
 of reason."""
+
+CHECK_TALK = """Check one line spoken by host {host} in a conversation between two hosts about a \
+document. The line cites no passage of the document.
+
+The conversation just before it:
+<<<
+{context}
+>>>
+{host}'s line: "{line}"
+
+The line passes if it only reacts, agrees, asks, restates or rewords what the conversation \
+before it has already said, says how a listener might feel about it, or moves on to the next \
+topic without saying anything about it. It fails if it states or presupposes a fact, number, \
+name, method, result or claim about the document's work that the conversation before it does \
+not contain, or if it judges the strength of the work's evidence (that it proves, confirms or \
+solidifies something). Reply with one word, TALK or CLAIM, then a colon and at most one \
+sentence of reason."""
 
 CHECK_B = """Check one line spoken by host B, whose part is only to ask questions and to \
 restate what host A has already said.
@@ -285,6 +323,42 @@ comparison that the conversation before it does not contain. Repeating or reword
 has already said, numbers and names included, does not fail. A question that only asks \
 about something does not fail. Reply with one word, FINE or FAILS, then a colon and at \
 most one sentence of reason."""
+
+CITE = """Below is one section of a podcast script about the document, one numbered line per \
+turn. {roles} For every {who}line that states anything from the document, reply with the line's \
+number and "SOURCE: ", then a copy, character for character, of the sentence or part of a \
+sentence of the document that the line is based on: at least 5 words, holding every number the \
+line says ("4. SOURCE: ..."). If the line draws on two places, give two numbered SOURCE lines. \
+If the document does not say what the line says, reply "4. SOURCE: NONE". If {a_who} line only \
+explains a general term the document uses but does not explain (what a sigmoid or a parameter \
+is), reply with its number, "BACKGROUND: " and only the term itself ("4. BACKGROUND: sigmoid"). \
+A short line that states nothing ("Exactly.", "Let's look at the method.") needs nothing.{b_none} \
+Reply with only the numbered SOURCE and BACKGROUND lines, in the order of the section.
+
+The section:
+<<<
+{draft}
+>>>"""
+
+# The hosts whose lines cite the source and are checked against it; B is added by --both-explain.
+CITED = {"A"}
+# Set by --draft: a repair keeps the line's length, a line with no SOURCE is shown the source sentences
+# nearest to it, and a repaired line that states something but cites nothing is cited.
+DRAFT = {"on": False}
+NEAR_SHOWN = 3  # source sentences shown to the repair of a line with no SOURCE
+
+
+def cite_words():
+    """The parts of the CITE and EDIT prompts that depend on which hosts cite."""
+    if "B" in CITED:
+        return dict(roles="Both hosts discuss it.", who="", a_who="a", b_none="", stater="either host",
+                    rule2="Delete or correct any line of either host that states something about the document but "
+                          "has no SOURCE line under it.", the_line="line", a_line="a line that has one",
+                    asks=" A question that only asks, stating and presupposing nothing about the document, passes.")
+    return dict(roles="Host A explains; host B asks.", who="A ", a_who="an A", b_none=" B lines never need one.",
+                stater="A", rule2="B only asks and restates: delete or rephrase any B line that brings in a fact, "
+                                  "number, name, example or judgement A has not said.",
+                the_line="A line", a_line="an A line", asks="")
 
 
 def log(msg):
@@ -553,6 +627,7 @@ def spoken(text, keep=()):
     text = re.sub(rf"({num})\s*%", lambda m: number_words(m.group(1), False) + " per cent", text)
     text = re.sub(rf"({num})\s*[–]\s*({num})", lambda m: f"{m.group(1)} to {m.group(2)}", text)
     text = re.sub(r"~\s*(?=\d)", "about ", text)
+    text = re.sub(r"\bapprox\.?(?=\s)", "about", text)
     text = re.sub(r"(?:(?<=\s)|^)[−-]\s*(?=\d)", "minus ", text)
     text = re.sub(r"\s*±\s*", " plus or minus ", text)
     text = re.sub(r"\s*(?:=|≈)\s*", lambda m: " is about " if "≈" in m.group(0) else " equals ", text)
@@ -710,6 +785,21 @@ def nearest_sentence(passage, src_norm):
     return best
 
 
+def nearest_sentences(text, src_norm, source=None, k=NEAR_SHOWN):
+    """The k source sentences sharing the most words of four letters or more with the text, as printed."""
+    mine = {w for w in words_of(text) if len(w) >= 4}
+    if not mine:
+        return []
+    scored = []
+    for x, _, _ in source_sentences(src_norm):
+        n = len(mine & set(words_of(x)))
+        if n >= 2:
+            scored.append((n, x))
+    scored.sort(key=lambda p: -p[0])
+    shown = printed_sentences(source) if source else {}
+    return [" ".join(shown.get(x, x).split()[:60]) for _, x in scored[:k]]
+
+
 def states_something(text):
     """Whether an A line needs a SOURCE: anything longer than a short bridge, or holding a number or name."""
     if re.search(r"\d", text) or scale_words(text) or len(text.split()) > 8:
@@ -763,7 +853,7 @@ def cite_faults(turns, quotes, bg, src_norm, max_copied=0, used=(), explained=()
     faults, background = {}, 0
     src_words = None
     for i, ((h, t), qs, term) in enumerate(zip(turns, quotes, bg)):
-        if h != "A":
+        if h not in CITED:
             continue
         why = []
         if term and not qs:
@@ -791,8 +881,21 @@ def cite_faults(turns, quotes, bg, src_norm, max_copied=0, used=(), explained=()
                 why.append(f"more than {MAX_BACKGROUND} BACKGROUND lines in this section: cite a SOURCE instead, "
                            "or leave the explanation out")
         elif not qs:
-            if states_something(t):
-                why.append("the line states something but has no SOURCE line")
+            # B's plain question (no number, scale or name) is left to the model's check, which lets one that
+            # presupposes nothing pass; A's lines keep the stricter rule.
+            asks = h != "A" and t.rstrip().endswith("?") and not re.search(r"\d", t) and not scale_words(t) \
+                and not names_in(t)
+            if "B" in CITED:
+                said_before = norm_text(" ".join(x for _, x in turns[:i]))
+                said_numbers = {norm_number(x) for x in re.findall(NUM, said_before)}
+                asks = (all(norm_number(x) in said_numbers for x in re.findall(NUM, t))
+                        and not scale_words(t) - scale_words(said_before)
+                        and all(n.lower() in said_before for n in names_in(t)))
+            if states_something(t) and not asks:
+                near = nearest_sentences(t, src_norm, source) if DRAFT["on"] else []
+                why.append("the line states something but has no SOURCE line" + (
+                    "; the document's sentences closest to it, one of which may be its SOURCE if the line keeps to "
+                    "what it says: " + " / ".join(f'"{x}"' for x in near) if near else ""))
         else:
             bad = [q for q in qs if not quote_in_source(q, src_norm)]
             if bad:
@@ -898,7 +1001,9 @@ def quantities(text):
 
 
 def b_faults(turns, so_far_lines):
-    """For each B line with a number or name not said before it, the reason."""
+    """For each B line with a number or name not said before it, the reason (none when B cites the source)."""
+    if "B" in CITED:
+        return {}
     numbers, words = heard(so_far_lines)
     units = {}  # each value A has given with a unit, and the units A gave it in
     for line in so_far_lines:
@@ -991,14 +1096,17 @@ def line_checks(ctx, turns, quotes, bg, so_far_lines, label, skip=()):
         if i in skip:
             continue
         context = "\n".join((so_far_lines + [f"{hh}: {tt}" for hh, tt in turns[:i]])[-8:]) or "(nothing yet)"
-        if h == "A" and quotes[i]:
-            jobs.append((i, CHECK_A.format(line=t, quote=" / ".join(quotes[i])), "SUPPORTED", ""))
-        elif h == "A" and bg[i]:
-            jobs.append((i, CHECK_BG.format(term=bg[i], line=t), "GENERAL", ""))
-        elif h == "A" and len(t.split()) >= 4:
-            jobs.append((i, CHECK_LINK.format(context=context, line=t), "LINK",
+        if h in CITED and quotes[i]:
+            jobs.append((i, CHECK_A.format(host=h, line=t, quote=" / ".join(quotes[i])), "SUPPORTED", ""))
+        elif h in CITED and bg[i]:
+            jobs.append((i, CHECK_BG.format(host=h, term=bg[i], line=t), "GENERAL", ""))
+        elif h in CITED and len(t.split()) >= 4 and "B" in CITED:
+            jobs.append((i, CHECK_TALK.format(host=h, context=context, line=t), "TALK",
+                         "it says something about the document the conversation has not said, with no SOURCE line: "))
+        elif h in CITED and len(t.split()) >= 4:
+            jobs.append((i, CHECK_LINK.format(host=h, context=context, line=t, asks=cite_words()["asks"]), "LINK",
                          "it says something about the document but has no SOURCE line: "))
-        elif h == "B" and len(t.split()) >= 4:
+        elif h == "B" and h not in CITED and len(t.split()) >= 4:
             jobs.append((i, CHECK_B.format(context=context, line=t), "FINE", ""))
     todo = list({p: good for _, p, good, _ in jobs if p not in ctx.cache}.items())
     if todo:
@@ -1037,18 +1145,42 @@ def repair_line(ctx, turns, quotes, bg, i, reasons, so_far_lines, label):
     after = [f"{h}: {t}" for h, t in turns[i + 1:i + 3]]
     reply = chat(ctx.model, ctx.prefix + REPAIR.format(
         before="\n".join(before) or "(the start of the episode)", line=cited_text([turns[i]], [quotes[i]], [bg[i]]),
-        after="\n".join(after) or "(the end of the section)", faults="\n".join(f"- {r}" for r in reasons),
-        rules=REPAIR_RULES[host], host=host), f"repair {label}", think=False, num_predict=400)
+        after="\n".join(after) or "(the end of the section)", faults="\n".join(f"- {r}" for r in near_hint(
+            ctx, turns[i], quotes[i], bg[i], reasons)),
+        rules=repair_rules(host), host=host, length=repair_length(turns[i][1])), f"repair {label}", think=False,
+        num_predict=400)
     new, nq, nbg = parse_cited(reply)
     for turn, q, term in zip(new, nq, nbg):
         if turn[0] == host:
+            if DRAFT["on"] and host in CITED and not q and not term and states_something(turn[1]):
+                (q,), (term,), _ = cite_section(ctx, [turn], f"{label} repaired line")
             return turn, q, term
     return None
 
 
-def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_ROUNDS):
+def near_hint(ctx, turn, qs, term, reasons):
+    """In a draft, the faults of a citing host's line with no SOURCE, with the source sentences nearest to it."""
+    if not DRAFT["on"] or turn[0] not in CITED or qs or term or any("closest to it" in r for r in reasons):
+        return reasons
+    near = nearest_sentences(turn[1], ctx.src_norm, ctx.source)
+    if not near:
+        return reasons
+    return reasons + ["the document's sentences closest to it, one of which may be its SOURCE if the line keeps to "
+                      "what it says: " + " / ".join(f'"{x}"' for x in near)]
+
+
+def repair_length(line):
+    """For a draft, the instruction to keep a repaired line about as long as it was."""
+    if not DRAFT["on"]:
+        return ""
+    return (f"\nKeep the line about as long as it is ({len(line.split())} words), a full spoken turn, unless a fault "
+            "can only be mended by cutting it.")
+
+
+def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_ROUNDS, rewritable=True):
     """Check every line and repair the faulty ones one at a time, up to `rounds` times, unless a fault is
-    one no line repair can mend or A's faulty lines are more than a third of all the lines. A B line still faulty
+    one no line repair can mend or, for a section that can be written again (`rewritable`), A's faulty lines
+    are more than a third of all the lines. A B line still faulty
     after the repairs becomes a stand-in that only invites A to go on ("Go on."), and the A line after it
     is repaired to follow on from it. Returns the section as it
     stands, its section faults, its line faults, the number of lines checked by the model, the number
@@ -1062,7 +1194,7 @@ def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_RO
             # follow on; a repair that leaves it faulty is undone. The lines after a change follow
             # something new, so the section is checked again until no B line is faulty.
             for _ in range(3):
-                bad = [i for i in sorted(faults) if turns[i][0] == "B"]
+                bad = [i for i in sorted(faults) if turns[i][0] == "B" and "B" not in CITED]
                 if not bad:
                     break
                 followers = {}
@@ -1090,7 +1222,7 @@ def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_RO
                     repairs -= 1
                 if undo:
                     section, faults, checked = all_faults(ctx, turns, quotes, bg, so_far_lines, budget, label)
-        if section or not faults or r == rounds or sum(turns[i][0] == "A" for i in faults) > len(turns) / 3:
+        if section or not faults or r == rounds or (rewritable and sum(turns[i][0] == "A" for i in faults) > len(turns) / 3):
             return turns, quotes, bg, section, faults, checked, repairs, stand_ins
         log(f"{label}: repairing {len(faults)} of {len(turns)} lines")
 
@@ -1105,7 +1237,7 @@ def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_RO
 
 def copy_runs(turns, quotes):
     """For each A line with a passage, the longest run of words it copies from it."""
-    return [copied_run(t, qs) for (h, t), qs in zip(turns, quotes) if h == "A" and qs]
+    return [copied_run(t, qs) for (h, t), qs in zip(turns, quotes) if h in CITED and qs]
 
 
 # ---------- frame ----------
@@ -1183,7 +1315,7 @@ def plan(ctx, words):
 def edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, point_numbers):
     """The draft edited against the source and the episode so far, or the reason the edit was refused."""
     reply = chat(ctx.model, ctx.prefix + EDIT.format(so_far="\n".join(so_far_lines) or "(this is the first section)",
-                                                     draft=cited_text(turns, quotes, bg)), f"edit {label}",
+                                                     draft=cited_text(turns, quotes, bg), **cite_words()), f"edit {label}",
                  think=False)
     log(describe(CALLS[-1]))
     edited, eq, ebg = parse_cited(reply)
@@ -1288,10 +1420,138 @@ def write_section(ctx, section, i, n, previous, so_far_lines, covered, later=())
                       line_faults=[dict(line=turns[j][1], faults=faults[j]) for j in sorted(faults)])
     runs = copy_runs(turns, quotes)
     result.update(copied_runs=runs, longest_copied=max(runs, default=0),
-                  background_lines=sum(1 for (h, _), qs, term in zip(turns, quotes, bg) if h == "A" and term and not qs))
+                  background_lines=sum(1 for (h, _), qs, term in zip(turns, quotes, bg) if h in CITED and term and not qs))
     log(f"{label}: longest run copied from a passage {result['longest_copied']} words; "
         f"{sum(r > COPY_REPORT for r in runs)} of {len(runs)} cited lines over {COPY_REPORT}; "
         f"{result['background_lines']} background lines")
+    return turns, quotes, bg, result
+
+
+def read_draft(path):
+    """A script written elsewhere, as (title, turns) by section: lines "A: ..." and "B: ...", with a
+    section starting at each line "# title" (lines before the first make an untitled section)."""
+    sections = [["", []]]
+    for line in Path(path).expanduser().read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        m = re.match(r"^([AB])\s*:\s*(.+)$", line)
+        if line.startswith("#"):
+            sections.append([line.lstrip("#").strip(), []])
+        elif m:
+            sections[-1][1].append((m.group(1), m.group(2).strip()))
+    return [(t, turns) for t, turns in sections if turns]
+
+
+SNAP_RUN = 6  # a misquoted passage sharing this many words in a row with one sentence of the source is that sentence
+
+
+def cite_section(ctx, turns, label):
+    """For each line of a draft section, the passages of the source the model cites for it and the term of its
+    BACKGROUND line, the draft's lines kept as they are. A passage the model misquotes but which shares a run
+    of SNAP_RUN words with one sentence of the source is replaced by that sentence. Returns the quotes, the
+    terms and the number of passages replaced."""
+    quotes, bg = [[] for _ in turns], [None] * len(turns)
+    reply = chat(ctx.model, ctx.prefix + CITE.format(
+        draft="\n".join(f"{n}. {h}: {t}" for n, (h, t) in enumerate(turns, 1)), **cite_words()),
+        f"cite {label}", think=False)
+    log(describe(CALLS[-1]))
+    got, got_bg = parse_numbered(reply, len(turns))
+    snapped = 0
+    for i, (h, t) in enumerate(turns):
+        if h not in CITED or plain_question(t):
+            continue
+        for q in got[i]:
+            if q.strip(" .").upper() == "NONE":
+                continue
+            if not quote_in_source(q, ctx.src_norm):
+                near = nearest_sentence(q, ctx.src_norm)
+                if near and copied_run(q, [near]) >= SNAP_RUN:
+                    q, snapped = printed_sentences(ctx.source).get(near, near), snapped + 1
+            quotes[i].append(q)
+        bg[i] = got_bg[i] if not quotes[i] else None
+    return quotes, bg, snapped
+
+
+def plain_question(text):
+    """When both hosts make points, a line that only asks, with no number, size or name, cites nothing."""
+    return ("B" in CITED and text.rstrip().endswith("?") and not re.search(r"\d", text) and not scale_words(text)
+            and not names_in(text))
+
+
+def drop_faulty(turns, quotes, bg, faults):
+    """The section without its faulty lines, a host's turns left next to each other joined into one; and the
+    lines dropped, with their faults."""
+    dropped = [dict(line=f"{turns[i][0]}: {turns[i][1]}", faults=faults[i]) for i in sorted(faults)]
+    out = []
+    for i, (turn, q, term) in enumerate(zip(turns, quotes, bg)):
+        if i in faults:
+            continue
+        if out and out[-1][0][0] == turn[0]:
+            (h, t), q0, b0 = out[-1]
+            qs = q0 + q
+            out[-1] = ((h, f"{t} {turn[1]}"), qs, None if qs else (b0 or term))
+        else:
+            out.append((turn, list(q), term))
+    return [x[0] for x in out], [x[1] for x in out], [x[2] for x in out], dropped
+
+
+def parse_numbered(reply, n):
+    """From a reply of numbered SOURCE and BACKGROUND lines, each line's passages and term; a SOURCE or
+    BACKGROUND line with no number belongs to the number before it, and a number outside 1..n is ignored."""
+    quotes, bg, at = [[] for _ in range(n)], [None] * n, None
+    for line in reply.splitlines():
+        line = line.strip().replace("**", "")
+        m = re.match(r"^(?:Line\s+)?(\d+)\s*[.:)]?\s*(?:[AB]\s*:\s*)?(.*)$", line)
+        if m:
+            at, line = int(m.group(1)) - 1, m.group(2)
+        tags = [t.start() for t in re.finditer(r"\b(?:SOURCE|BACKGROUND)\s*:", line)]
+        for tag in [line[a:b] for a, b in zip(tags, tags[1:] + [len(line)])]:
+            t = re.match(r"^\s*(SOURCE|BACKGROUND)\s*:\s*(.+)$", tag, re.I)
+            if t and at is not None and 0 <= at < n:
+                text = t.group(2).strip().strip("\"“”'‘’").strip()
+                if t.group(1).upper() == "SOURCE":
+                    quotes[at].append(text)
+                else:
+                    bg[at] = text
+    return quotes, bg
+
+
+def check_section(ctx, title, draft, i, n, so_far_lines):
+    """A section of a draft, with a passage cited for each of A's lines, then checked, repaired and edited as
+    a written section is. It is not written again: a section that still fails keeps its faulty lines."""
+    label = f"section {i + 1}/{n}"
+    quotes, bg, snapped = cite_section(ctx, draft, label)
+    budget = max(SECTION_WORDS, sum(len(t.split()) for _, t in draft))
+    turns, quotes, bg, sect, faults, checked, repairs, stand_ins = settle(ctx, draft, quotes, bg, so_far_lines, budget,
+                                                                          label, rewritable=False)
+    dropped = []
+    if "B" in CITED and faults and not sect:
+        turns, quotes, bg, dropped = drop_faulty(turns, quotes, bg, faults)
+        faults = {}
+    result = dict(title=title, attempt=1, draft_words=sum(len(t.split()) for _, t in draft), passages_snapped=snapped,
+                  dropped=dropped,
+                  words=sum(len(t.split()) for _, t in turns), section_faults=sect, line_checks=checked,
+                  repairs=repairs, stand_ins=[dict(stand_in=a, line=b, faults=c) for a, b, c in stand_ins],
+                  failed_index=sorted(faults),
+                  line_faults=[dict(line=turns[j][1], faults=faults[j]) for j in sorted(faults)])
+    log(f"{label} '{title}': {result['draft_words']} words drafted, {snapped} passages matched to their sentence, "
+        f"{repairs} lines repaired" + (f", {len(stand_ins)} B lines replaced by a stand-in" if stand_ins else "")
+        + (f"; {'; '.join(sect)}" if sect else "")
+        + (f"; {len(faults)} lines still faulty" if faults else "")
+        + (f"; {len(dropped)} lines still faulty after repair dropped" if dropped else "")
+        + ("; checks pass" if not sect and not faults else ""))
+    if not sect and not faults:
+        keep = {norm_number(x) for _, t in turns for x in re.findall(NUM, t)} & ctx.numbers
+        edited, refused = edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, keep)
+        result["edit"] = "kept" if edited else f"refused: {refused}"
+        if edited:
+            result.update(words_before_edit=result["words"], lines_before_edit=len(turns))
+            turns, quotes, bg = edited
+            result.update(words=sum(len(t.split()) for _, t in turns), lines=len(turns))
+        log(f"{label}: edit {result['edit']}" + (f", {result['words_before_edit']} -> {result['words']} words"
+                                                   if edited else ""))
+    runs = copy_runs(turns, quotes)
+    result.update(copied_runs=runs, longest_copied=max(runs, default=0),
+                  background_lines=sum(1 for (h, _), qs, term in zip(turns, quotes, bg) if h in CITED and term and not qs))
     return turns, quotes, bg, result
 
 
@@ -1334,7 +1594,18 @@ def main():
     ap.add_argument("--max-copied", type=int, default=12, metavar="N",
                     help="repair an A line that copies more than N words in a row from its passage "
                          "(default 12; 0 measures and reports only)")
+    ap.add_argument("--draft", metavar="SCRIPT",
+                    help="check and repair a script written elsewhere instead of writing one: lines 'A: ...' and "
+                         "'B: ...' (A explains, B asks), sections marked '# title'; it keeps its own opening and "
+                         "goodbye, and --minutes is not used")
+    ap.add_argument("--both-explain", action="store_true",
+                    help="with --draft: either host may state what the document says, and every line of either "
+                         "host that does is cited and checked as A's are (otherwise B only asks and restates)")
     a = ap.parse_args()
+    if a.both_explain:
+        if not a.draft:
+            ap.error("--both-explain needs --draft")
+        CITED.add("B")
 
     check_model(a.model)
     from pdf2audio.podcast import load_say
@@ -1345,34 +1616,49 @@ def main():
     ctx = SimpleNamespace(model=a.model, prefix=PREFIX.format(source=source), source=source, src_norm=norm_text(source),
                           numbers=numbers, words=words, keep=set(load_say()), parallel=max(1, a.parallel),
                           max_copied=max(0, a.max_copied), cache={}, used_passages=[], explained={})
-    target = int(a.minutes * WORDS_PER_MINUTE)
-    log(f"source: {len(source.split())} words; planning about {target} words")
-    meta = plan(ctx, target)
-    sections = meta["sections"]
-    log(f"plan: {len(sections)} sections: " + "; ".join(s["title"] for s in sections))
-    opening, closing = frame(meta, ctx.src_norm)
+    if a.draft:
+        DRAFT["on"] = True
+        drafts = read_draft(a.draft)
+        if not drafts:
+            sys.exit(f"podcast-script: no 'A: ' or 'B: ' lines in {a.draft}")
+        meta = {}
+        sections = [{"title": t, "words": sum(len(x.split()) for _, x in turns)} for t, turns in drafts]
+        opening, closing = [], []
+        log(f"source: {len(source.split())} words; draft: {len(drafts)} sections, "
+            f"{sum(s['words'] for s in sections)} words")
+    else:
+        target = int(a.minutes * WORDS_PER_MINUTE)
+        log(f"source: {len(source.split())} words; planning about {target} words")
+        meta = plan(ctx, target)
+        sections = meta["sections"]
+        log(f"plan: {len(sections)} sections: " + "; ".join(s["title"] for s in sections))
+        opening, closing = frame(meta, ctx.src_norm)
 
     so_far = [f"{h}: {t}" for h, t in opening]
-    lines = [f"{h}: {spoken(t, ctx.keep)}" for h, t in opening] + [""]
+    lines = [f"{h}: {spoken(t, ctx.keep)}" for h, t in opening] + ([""] if opening else [])
     report, done, previous = [], [], "\n".join(so_far)
     for i, section in enumerate(sections):
-        covered = [p for s in sections[:i] for p in s["points"]]
-        later = [p for s in sections[i + 1:] for p in s["points"]]
-        turns, quotes, bg, result = write_section(ctx, section, i, len(sections), previous, so_far, covered, later)
+        if a.draft:
+            turns, quotes, bg, result = check_section(ctx, section["title"], drafts[i][1], i, len(sections), so_far)
+        else:
+            covered = [p for s in sections[:i] for p in s["points"]]
+            later = [p for s in sections[i + 1:] for p in s["points"]]
+            turns, quotes, bg, result = write_section(ctx, section, i, len(sections), previous, so_far, covered, later)
         report.append(result)
         done.append((section["title"], turns, quotes, bg, result))
         for (h, _), qs, term in zip(turns, quotes, bg):
-            if h == "A":
+            if h in CITED:
                 ctx.used_passages += qs
                 if term and not qs:
                     ctx.explained[term_key(term)] = term
-        so_far += [f"# {section['title']}"] + [f"{h}: {t}" for h, t in turns]
+        mark = [f"# {section['title']}"] if section["title"] else []
+        so_far += mark + [f"{h}: {t}" for h, t in turns]
         previous = "\n".join(f"{h}: {t}" for h, t in turns[-4:])
-        lines.append(f"# {section['title']}")
-        lines += [f"{h}: {spoken(t, ctx.keep)}" for h, t in turns]
+        lines += mark + [f"{h}: {spoken(t, ctx.keep)}" for h, t in turns]
         lines.append("")
-    last = next((line[0] for line in reversed(so_far) if line[:2] in ("A:", "B:")), "B")
-    lines[-1:] = [f"{h}: {spoken(t, ctx.keep)}" for h, t in closing_after(last, closing)] + [""]
+    if closing:
+        last = next((line[0] for line in reversed(so_far) if line[:2] in ("A:", "B:")), "B")
+        lines[-1:] = [f"{h}: {spoken(t, ctx.keep)}" for h, t in closing_after(last, closing)] + [""]
 
     out = Path(a.output).expanduser()
     out.write_text("\n".join(lines), encoding="utf-8")
@@ -1382,7 +1668,7 @@ def main():
     copying = dict(cited_lines=len(runs), over_report_limit=sum(x > COPY_REPORT for x in runs),
                    longest=max(runs, default=0), median=sorted(runs)[len(runs) // 2] if runs else 0)
     out.with_name(out.name + ".check.json").write_text(json.dumps(
-        dict(source=str(a.source), model=a.model, title=meta.get("title"), authors=meta.get("authors"),
+        dict(source=str(a.source), model=a.model, draft=a.draft, title=meta.get("title"), authors=meta.get("authors"),
              max_copied=ctx.max_copied, plan=sections, copying=copying, sections=report, failed=failed), indent=2))
     elapsed = time.time() - started
     out.with_name(out.name + ".calls.json").write_text(json.dumps(
