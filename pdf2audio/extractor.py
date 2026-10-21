@@ -204,12 +204,40 @@ def _clean_picture_text(md, line_numbers):
     return _PICTURE_TEXT.sub(keep_prose, md)
 
 
+_YEAR = r"(?:(?:19|20)\d{2}[a-z]?|in\s+press|forthcoming|n\.\s?d\.)"
+# An author list: surnames of one or more capitalised words (with particles such as "van der"), joined
+# by commas, "and" or "&", or followed by "et al.".
+_PARTICLE = r"(?:(?:van|von|de|der|den|del|da|di|le|la|du)\s+)"
+_NAME = rf"{_PARTICLE}*[A-Z][\w'’\-]+(?:\s+{_PARTICLE}*[A-Z][\w'’\-]+)*"
+_AUTHORS = rf"{_NAME}(?:\s+et\s+al\.?|(?:,\s*|\s+)(?:and|&)\s+{_NAME}|,\s*{_NAME})*"
+# One work in a bracketed citation: "e.g., Smith et al., 2020a, p. 4" or "Lee and Park 2019, 2021".
+_WORK = (rf"(?:(?:e\.\s?g\.|i\.\s?e\.|see(?:\s+also)?|cf\.|also|for\s+example|for\s+instance)[,:]?\s+)*"
+         rf"{_AUTHORS},?\s+(?:#{{1,6}}\s+)?{_YEAR}(?:\s*,\s*{_YEAR})*"  # a year the extraction put under a heading mark
+         rf"(?:,?\s+(?:p|pp|ch|sec|Sec|Section|Chapter|Thm|Theorem)\.?\s*[\w.–\-]+)?")
+_BRACKETED = re.compile(rf"\s*[(\[]\s*{_WORK}(?:\s*[;,]\s*{_WORK})*\s*[)\]]")
+# The year after authors named in the sentence: "Smith et al. (2020) showed".
+_NARRATIVE = re.compile(rf"({_AUTHORS})\s*[(\[]\s*{_YEAR}(?:\s*[;,]\s*{_YEAR})*(?:,?\s+(?:p|pp)\.\s*[\d–\-]+)?\s*[)\]]")
+_NUMERIC = re.compile(r"\s*\[\s*[1-9]\d*[a-z]?(?:\s*[,–\-]\s*\d+[a-z]?)*\s*\]")
+
+
+def strip_citations(md):
+    """The text without in-text citations: a bracketed citation goes whole, numeric ("[3]", "[3–5]") or
+    author-year ("(Smith et al., 2020; Lee 2021)", "(see Smith 2019)"); a citation that is part of the
+    sentence keeps its names and loses the bracketed year ("Smith et al. (2020) showed" becomes "Smith et
+    al. showed"). A bracket holding anything else, such as "(the 2012 challenge)" or "[0, 1]", is kept."""
+    md = _BRACKETED.sub("", md)
+    md = _NARRATIVE.sub(r"\1", md)
+    md = _NUMERIC.sub("", md)
+    return md
+
+
 def clean_text(
     md,
     skip_references=True,
     skip_equations=False,
     skip_captions=False,
     keep_footnotes=False,
+    keep_citations=False,
 ):
     # The table placeholder can pick up heading markup from the text around it; it must
     # not end a section or be read as a heading.
@@ -286,6 +314,10 @@ def clean_text(
     md = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", md)
     md = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", md)
 
+    # In-text citations, after links and emphasis have been reduced to their text
+    if not keep_citations:
+        md = strip_citations(md)
+
     # Markdown table formatting -> just keep cell text
     md = re.sub(r"^\|[-:| ]+\|$", "", md, flags=re.MULTILINE)  # separator rows
     md = re.sub(r"\|", " ", md)  # cell dividers
@@ -335,6 +367,7 @@ def extract_and_clean(
     on_equation_page=None,
     skip_appendices=False,
     check_equations=False,
+    keep_citations=False,
 ):
     """Extract and clean a PDF for narration.
 
@@ -347,7 +380,7 @@ def extract_and_clean(
     """
     md, eqs = extract_pdf(pdf_path, start_page, end_page)
     cleaned = clean_text(
-        md, skip_references, skip_equations, skip_captions, keep_footnotes
+        md, skip_references, skip_equations, skip_captions, keep_footnotes, keep_citations
     )
     if skip_appendices:
         # Before explaining equations, so none is spent on the appendices.

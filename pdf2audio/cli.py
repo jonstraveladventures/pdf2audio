@@ -34,6 +34,9 @@ def build_parser():
     p.add_argument("--llm-model", default=DEFAULT_MODEL, help=f"Ollama vision model for --explain-equations (default: {DEFAULT_MODEL})")
     p.add_argument("--skip-captions", action="store_true", help="Remove figure/table captions")
     p.add_argument("--keep-footnotes", action="store_true", help="Include footnotes inline (skipped by default)")
+    p.add_argument("--keep-citations", action="store_true",
+                   help="Read in-text citations (by default \"(Smith et al., 2020)\" and \"[3]\" are left out, "
+                        "and \"Smith et al. (2020) showed\" is read as \"Smith et al. showed\")")
     p.add_argument("--output-text", action="store_true", help="Save cleaned text to a .txt file")
     p.add_argument("--start-page", type=int, help="Start page (1-indexed)")
     p.add_argument("--end-page", type=int, help="End page (1-indexed, inclusive)")
@@ -100,6 +103,7 @@ def main():
                 skip_equations=args.skip_equations,
                 skip_captions=args.skip_captions,
                 keep_footnotes=args.keep_footnotes,
+                keep_citations=args.keep_citations,
                 explain_equations=args.explain_equations,
                 llm_model=args.llm_model,
                 on_equation_page=on_equation_page,
