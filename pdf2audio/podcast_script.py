@@ -90,6 +90,10 @@ REPAIR_ROUNDS = 2  # repairs of a faulty line within one write
 WORDS_PER_MINUTE = 150
 SECTION_WORDS = 250  # the length the writer produces for a section; asked for 350 to 400, it averaged 250
 NUM_CTX = 40960  # the same for every call: a change makes Ollama reload the model
+# Set here rather than left to the model's Ollama package: qwen3.5's sets 1.5, qwen3.8's sets 0, and
+# without it qwen3.8 ran a section write to the whole allowance, 6,082 words for 250 (2026-10-26).
+PRESENCE_PENALTY = 1.5
+WRITE_TOKENS = 2500  # a section write's allowance; the longest normal write in the runs to 2026-10-09 was 927
 NUM = r"\d+(?:,\d{3})*(?:\.\d+)?"
 
 # Every prompt starts with the document, so Ollama can reuse its cache of it between calls.
@@ -378,7 +382,8 @@ def chat(model, prompt, label, think=True, num_predict=16384, temperature=0.7, t
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "think": think,
-        "options": {"temperature": temperature, "num_ctx": NUM_CTX, "num_predict": num_predict},
+        "options": {"temperature": temperature, "num_ctx": NUM_CTX, "num_predict": num_predict,
+                    "presence_penalty": PRESENCE_PENALTY},
     }
     req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
@@ -1370,7 +1375,7 @@ def write_section(ctx, section, i, n, previous, so_far_lines, covered, later=())
                                                           position=position, covered=cov,
                                                           previous=prev, style=STYLE, feedback=feedback,
                                                           max_background=MAX_BACKGROUND),
-                     f"write {label}", think=False)
+                     f"write {label}", think=False, num_predict=WRITE_TOKENS)
         log(describe(CALLS[-1]))
         turns, quotes, bg = parse_cited(reply)
         turns, quotes, bg, sect, faults, checked, repairs, stand_ins = settle(ctx, turns, quotes, bg, so_far_lines,
