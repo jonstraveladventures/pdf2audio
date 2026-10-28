@@ -58,8 +58,17 @@ and checked like any other line. With --both-explain as well, either host may st
 document says: every line of either host that states something is cited and checked as A's
 are. A line with no passage, and no number, size or name the section has not already said, is
 checked as conversation, which lets a reaction, a restatement or a question pass; a question
-with no number, size or name cites nothing. A line still faulty after its repairs is dropped,
-and the same host's turns either side of it are joined.
+with no number, size or name cites nothing. A line still faulty after its repairs is checked
+once more, with thinking, against the whole document and the sentences nearest to it; it is
+dropped only if that check also fails it (or its fault is a number or name the document does
+not contain, a symbol that cannot be said, or a repeated line), and otherwise kept and marked.
+In a draft, each section whose lines pass is then read whole for where the conversation does
+not follow on (a reply to nothing, a question left unanswered, a turn that changes subject
+halfway); each such line in turn is rewritten, or given a lead-in line of the other host's,
+and the change kept only if its lines pass their checks and the section, read again, follows
+on there. Breaks left are listed in the review
+sheet and .check.json but do not fail the section, since the reading also flags lines that
+follow on (two of eleven sections of a clean script, 2026-10-28).
 
 Beside the script go <script>.review.md (each line of A's beside its passage, with any
 check that failed and any long copied run), <script>.check.json (each section's checks) and <script>.calls.json
@@ -85,6 +94,7 @@ OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:27b-mxfp8"
 ATTEMPTS = 4  # writes of a section before the best one is kept
 REPAIR_ROUNDS = 2  # repairs of a faulty line within one write
+REPAIR_VIEW = (4, 2)  # lines a repair is shown before and after the line
 # Only the plan is made with thinking: it used nearly all the output of the writing calls,
 # 7 to 15 minutes each, and once the whole allowance with no reply (2026-10-07).
 WORDS_PER_MINUTE = 150
@@ -343,6 +353,67 @@ The section:
 <<<
 {draft}
 >>>"""
+
+COHERE = """Below is one section of a podcast episode, one numbered line per turn, after the end of the \
+episode so far. Read it as a listener would, one line after another, and find each line where the \
+conversation breaks:
+- a line that answers, agrees with, corrects or picks up something no line before it says (a \
+"No, ..." when nothing was asked, a "That's right" when nothing was said);
+- a question that the line after it neither answers nor takes up;
+- a line that changes the subject in the middle of a turn, so that its sentences do not belong \
+together.
+Judge only whether the lines follow on from each other, not whether they are true. Reply with the \
+number of each such line, a colon and one sentence saying what it fails to follow ("4: it answers a \
+question nobody asked."), one per line. If every line follows on, reply NONE.
+
+The end of the episode so far:
+<<<
+{before}
+>>>
+The section:
+<<<
+{section}
+>>>"""
+
+RECHECK = """A line of the episode failed its checks and is about to be cut. Check it once more, against \
+the whole document.
+
+The conversation just before it:
+<<<
+{context}
+>>>
+The line, spoken by host {host}: "{line}"
+The passage it was said to rest on: {quote}
+The document's sentences closest to it: {near}
+Why it failed: {faults}
+
+A reason about how the line was cited (a passage not copied exactly, a passage another section also \
+cited) does not by itself make the line wrong. The line passes if the document, anywhere, states \
+everything it says, or if it only reacts, asks, or restates what the document says. It fails if it adds \
+a judgement, comparison, consequence or generalisation the document does not state, or changes a number \
+or a name. Reply with one word, SUPPORTED or UNSUPPORTED, then a colon and one sentence of reason."""
+
+BRIDGE = """The conversation of the episode does not follow on at one line: {reason} Mend it in one of two \
+ways. Either rewrite the line so that it follows from the lines before it, keeping what it says, or keep \
+the line and put before it one short line of host {other}'s that asks about or leads into what it says, \
+stating nothing it does not say. A line that answers nothing loses an opening such as "No," or "That's \
+right."
+
+The lines before it:
+<<<
+{before}
+>>>
+The line:
+<<<
+{line}
+>>>
+The lines after it:
+<<<
+{after}
+>>>
+
+{rules}
+Reply with only the line, or the two lines, each starting "A: " or "B: "."""
 
 # The hosts whose lines cite the source and are checked against it; B is added by --both-explain.
 CITED = {"A"}
@@ -1146,8 +1217,8 @@ def repair_line(ctx, turns, quotes, bg, i, reasons, so_far_lines, label):
     """The line rewritten to mend its faults, as (turn, quotes, term), or None if the reply has no line
     for the same host."""
     host = turns[i][0]
-    before = (so_far_lines + [f"{h}: {t}" for h, t in turns[:i]])[-4:]
-    after = [f"{h}: {t}" for h, t in turns[i + 1:i + 3]]
+    before = (so_far_lines + [f"{h}: {t}" for h, t in turns[:i]])[-REPAIR_VIEW[0]:]
+    after = [f"{h}: {t}" for h, t in turns[i + 1:i + 1 + REPAIR_VIEW[1]]]
     reply = chat(ctx.model, ctx.prefix + REPAIR.format(
         before="\n".join(before) or "(the start of the episode)", line=cited_text([turns[i]], [quotes[i]], [bg[i]]),
         after="\n".join(after) or "(the end of the section)", faults="\n".join(f"- {r}" for r in near_hint(
@@ -1231,13 +1302,25 @@ def settle(ctx, turns, quotes, bg, so_far_lines, budget, label, rounds=REPAIR_RO
             return turns, quotes, bg, section, faults, checked, repairs, stand_ins
         log(f"{label}: repairing {len(faults)} of {len(turns)} lines")
 
-        def fix(i):
-            return i, repair_line(ctx, turns, quotes, bg, i, faults[i], so_far_lines, label)
-        with ThreadPoolExecutor(max_workers=ctx.parallel) as pool:
-            for i, mended in pool.map(fix, sorted(faults)):
+        # Faulty lines near enough to be in each other's view are repaired in order, each shown the one before
+        # it as repaired: repaired side by side, two neighbours were each fitted to the other's old text
+        # (2026-10-28). Groups further apart are repaired at the same time.
+        def fix(group):
+            made = 0
+            for i in group:
+                mended = repair_line(ctx, turns, quotes, bg, i, faults[i], so_far_lines, label)
                 if mended:
-                    repairs += (turns[i], quotes[i], bg[i]) != mended  # a line sent back unchanged is no repair
+                    made += (turns[i], quotes[i], bg[i]) != mended  # a line sent back unchanged is no repair
                     turns[i], quotes[i], bg[i] = mended
+            return made
+        groups = []
+        for i in sorted(faults):
+            if groups and i - groups[-1][-1] <= REPAIR_VIEW[0]:
+                groups[-1].append(i)
+            else:
+                groups.append([i])
+        with ThreadPoolExecutor(max_workers=ctx.parallel) as pool:
+            repairs += sum(pool.map(fix, groups))
 
 
 def copy_runs(turns, quotes):
@@ -1317,8 +1400,23 @@ def plan(ctx, words):
     sys.exit("podcast-script: the model did not return a usable plan")
 
 
-def edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, point_numbers):
-    """The draft edited against the source and the episode so far, or the reason the edit was refused."""
+def swapped_hosts(turns, edited):
+    """Lines of an edit that keep most of one line of the section but give it to the other host: an edit
+    that passed its checks had turned B's questions into A's and A's answers into B's (2026-10-28)."""
+    out = []
+    for h, t in edited:
+        w = set(words_of(t))
+        if len(w) < 4:
+            continue
+        best = max(turns, key=lambda x: len(w & set(words_of(x[1]))))
+        if best[0] != h and len(w & set(words_of(best[1]))) >= 0.6 * len(w):
+            out.append(t)
+    return out
+
+
+def edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, point_numbers, accepted=frozenset()):
+    """The draft edited against the source and the episode so far, or the reason the edit was refused. A line
+    in `accepted` (kept on a re-check), left as it was, is not held against the edit."""
     reply = chat(ctx.model, ctx.prefix + EDIT.format(so_far="\n".join(so_far_lines) or "(this is the first section)",
                                                      draft=cited_text(turns, quotes, bg), **cite_words()), f"edit {label}",
                  think=False)
@@ -1333,8 +1431,12 @@ def edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, point_numb
     dropped = sorted({norm_number(x) for _, t in turns for x in re.findall(NUM, t)} & point_numbers - kept)
     if dropped:
         return None, "dropped planned points (" + ", ".join(dropped) + ")"
+    swapped = swapped_hosts(turns, edited)
+    if swapped:
+        return None, f'gave lines to the other host ("{swapped[0][:50]}")'
     edited, eq, ebg, section, faults, _, _, _ = settle(ctx, edited, eq, ebg, so_far_lines, budget,
                                                        f"edit {label}", rounds=0)
+    faults = {i: rs for i, rs in faults.items() if edited[i][1] not in accepted}
     if section or faults:
         return None, "; ".join(section + [f'"{edited[i][1][:50]}": {"; ".join(rs)}' for i, rs in sorted(faults.items())])
     return (edited, eq, ebg), None
@@ -1482,21 +1584,110 @@ def plain_question(text):
             and not names_in(text))
 
 
+# Faults a re-check cannot clear: a number or name not in the document at all, a symbol that cannot be said, a
+# line said twice, a point an earlier section already made (the re-check judges truth, not repetition).
+HARD_FAULTS = ("numbers or names the document does not contain", "symbols that cannot be spoken",
+               "it repeats an earlier line", "its SOURCE was already cited in an earlier section")
+
+
+def recheck(ctx, turns, quotes, bg, faults, so_far_lines, label):
+    """For each faulty line, a check with thinking against the whole document, shown the sentences nearest
+    to it, as {index: (passes, reason)}. Of the ten lines one run cut, five said what the paper says and had
+    failed on how they were cited, and three were recaps of earlier points (2026-10-28)."""
+    def ask(i):
+        h, t = turns[i]
+        context = "\n".join((so_far_lines + [f"{hh}: {tt}" for hh, tt in turns[:i]])[-8:]) or "(nothing yet)"
+        near = nearest_sentences(t, ctx.src_norm, ctx.source)
+        prompt = ctx.prefix + RECHECK.format(
+            context=context, host=h, line=t, quote=" / ".join(f'"{q}"' for q in quotes[i]) or "(none)",
+            near=" / ".join(f'"{x}"' for x in near) or "(none found)", faults="; ".join(faults[i]))
+        v = verdict(chat(ctx.model, prompt, f"recheck {label}", think=True, num_predict=8000, temperature=0.6),
+                    "SUPPORTED")
+        if v[1] == "no verdict in the reply":  # one of ten test lines used its whole allowance thinking (2026-10-28)
+            v = verdict(chat(ctx.model, prompt, f"recheck {label}", think=True, temperature=0.6), "SUPPORTED")
+        return i, v
+    with ThreadPoolExecutor(max_workers=ctx.parallel) as pool:
+        return dict(pool.map(ask, sorted(faults)))
+
+
 def drop_faulty(turns, quotes, bg, faults):
-    """The section without its faulty lines, a host's turns left next to each other joined into one; and the
-    lines dropped, with their faults."""
+    """The section without its faulty lines, and the lines dropped, with their faults. A host's turns left next
+    to each other are not joined: joining made one turn of four questions, and a reply to a dropped line was
+    left answering nothing (2026-10-28), so the coherence pass mends the conversation where a line went."""
     dropped = [dict(line=f"{turns[i][0]}: {turns[i][1]}", faults=faults[i]) for i in sorted(faults)]
+    keep = [i for i in range(len(turns)) if i not in faults]
+    return [turns[i] for i in keep], [list(quotes[i]) for i in keep], [bg[i] for i in keep], dropped
+
+
+def bridge(ctx, turns, quotes, bg, i, reason, so_far_lines, label):
+    """Line i rewritten to follow on, or kept with a lead-in line of the other host's before it, as a list of
+    (turn, quotes, term); None if the reply has neither."""
+    host = turns[i][0]
+    other = "B" if host == "A" else "A"
+    before = (so_far_lines + [f"{h}: {t}" for h, t in turns[:i]])[-REPAIR_VIEW[0]:]
+    after = [f"{h}: {t}" for h, t in turns[i + 1:i + 1 + REPAIR_VIEW[1]]]
+    rules = repair_rules(host) + "\n" + repair_rules(other)
+    reply = chat(ctx.model, ctx.prefix + BRIDGE.format(
+        reason=reason, other=other, before="\n".join(before) or "(the start of the episode)",
+        line=cited_text([turns[i]], [quotes[i]], [bg[i]]), after="\n".join(after) or "(the end of the section)",
+        rules=rules), f"repair {label}", think=False, num_predict=500)
+    new = list(zip(*parse_cited(reply)))
+    if len(new) >= 2 and new[-2][0][0] == other and new[-1][0][0] == host:
+        new = new[-2:]
+    elif new and new[-1][0][0] == host:
+        new = new[-1:]
+    else:
+        return None
     out = []
-    for i, (turn, q, term) in enumerate(zip(turns, quotes, bg)):
-        if i in faults:
-            continue
-        if out and out[-1][0][0] == turn[0]:
-            (h, t), q0, b0 = out[-1]
-            qs = q0 + q
-            out[-1] = ((h, f"{t} {turn[1]}"), qs, None if qs else (b0 or term))
-        else:
-            out.append((turn, list(q), term))
-    return [x[0] for x in out], [x[1] for x in out], [x[2] for x in out], dropped
+    for turn, q, term in new:
+        if turn[0] in CITED and not q and not term and states_something(turn[1]):
+            (q,), (term,), _ = cite_section(ctx, [turn], f"{label} repaired line")
+        out.append((turn, list(q), term))
+    return out
+
+
+def cohere(ctx, turns, quotes, bg, so_far_lines, budget, label, accepted=frozenset()):
+    """The section with each line where its conversation breaks mended, in order, so that each repair sees
+    the one before it: the line is rewritten, or a lead-in line of the other host's is put before it. A
+    change is kept only if its lines pass their checks and the section, read again, no longer breaks
+    there; a line in `accepted` (kept on a re-check) and left as it was is not held against a change.
+    Returns the section, the changes kept and the breaks left, by index."""
+    found = breaks(ctx, turns, so_far_lines, label)
+    if not found:
+        return turns, quotes, bg, 0, {}
+    log(f"{label}: the conversation breaks at {len(found)} lines; mending them")
+
+    def flat(units):
+        items = [x for u in units for x in u]
+        return [x[0] for x in items], [list(x[1]) for x in items], [x[2] for x in items]
+
+    def starts(units):
+        return [sum(len(u) for u in units[:k]) for k in range(len(units))]
+    orig = [[x] for x in zip(turns, quotes, bg)]
+    units = list(orig)
+    for i in sorted(found):
+        t, q, b = flat(units)
+        mended = bridge(ctx, t, q, b, starts(units)[i], found[i], so_far_lines, label)
+        if mended and mended != units[i]:
+            units[i] = mended
+    changed = [i for i in range(len(units)) if units[i] is not orig[i]]
+    if not changed:
+        return turns, quotes, bg, 0, found
+    # Judged on their own lines: a section fault already there (one host three times running, left by a
+    # dropped line) is what a lead-in mends, so it does not undo the changes.
+    t, q, b = flat(units)
+    faults = line_faults(ctx, t, q, b, so_far_lines)
+    fails, _ = line_checks(ctx, t, q, b, so_far_lines, label, skip=set(faults))
+    bad_lines = {k for k in set(faults) | {k for k, _ in fails} if t[k][1] not in accepted}
+    left = breaks(ctx, t, so_far_lines, label)
+    at = starts(units)
+    undo = [i for i in changed if any(k in bad_lines or k in left for k in range(at[i], at[i] + len(units[i])))]
+    for i in undo:
+        units[i] = orig[i]
+    t, q, b = flat(units)
+    if undo:
+        left = breaks(ctx, t, so_far_lines, label)
+    return t, q, b, len(changed) - len(undo), left
 
 
 def parse_numbered(reply, n):
@@ -1520,6 +1711,20 @@ def parse_numbered(reply, n):
     return quotes, bg
 
 
+def breaks(ctx, turns, so_far_lines, label):
+    """The lines where the section's conversation does not follow on, by index, with the reason."""
+    section = "\n".join(f"{j + 1}. {h}: {t}" for j, (h, t) in enumerate(turns))
+    reply = chat(ctx.model, ctx.prefix + COHERE.format(before="\n".join(so_far_lines[-4:]) or "(the start of the "
+                                                       "episode)", section=section),
+                 f"coherence {label}", think=False, num_predict=600, temperature=0)
+    found = {}
+    for line in reply.splitlines():
+        m = re.match(r"^\W*(?:Line\s+)?(\d+)\s*[.:)]\s*(.+)$", line.strip().replace("**", ""))
+        if m and 0 < int(m.group(1)) <= len(turns):
+            found.setdefault(int(m.group(1)) - 1, m.group(2).strip()[:200])
+    return found
+
+
 def check_section(ctx, title, draft, i, n, so_far_lines):
     """A section of a draft, with a passage cited for each of A's lines, then checked, repaired and edited as
     a written section is. It is not written again: a section that still fails keeps its faulty lines."""
@@ -1528,12 +1733,27 @@ def check_section(ctx, title, draft, i, n, so_far_lines):
     budget = max(SECTION_WORDS, sum(len(t.split()) for _, t in draft))
     turns, quotes, bg, sect, faults, checked, repairs, stand_ins = settle(ctx, draft, quotes, bg, so_far_lines, budget,
                                                                           label, rewritable=False)
-    dropped = []
+    dropped, kept, mended, left = [], [], 0, {}
     if "B" in CITED and faults and not sect:
+        # A line is cut only if a re-check with thinking also fails it; one that passes stays, marked.
+        appeal = {j: rs for j, rs in faults.items() if not any(r.startswith(HARD_FAULTS) for r in rs)}
+        verdicts = recheck(ctx, turns, quotes, bg, appeal, so_far_lines, label) if appeal else {}
+        for j, (ok, why) in sorted(verdicts.items()):
+            if ok:
+                kept.append(dict(line=f"{turns[j][0]}: {turns[j][1]}", text=turns[j][1], faults=faults.pop(j),
+                                 recheck=why))
         turns, quotes, bg, dropped = drop_faulty(turns, quotes, bg, faults)
+        for d, j in zip(dropped, sorted(faults)):
+            if j in verdicts:
+                d["recheck"] = verdicts[j][1]
         faults = {}
+    accepted = {k["text"] for k in kept}
+    if not sect and not faults:
+        turns, quotes, bg, mended, left = cohere(ctx, turns, quotes, bg, so_far_lines, budget, label, accepted)
     result = dict(title=title, attempt=1, draft_words=sum(len(t.split()) for _, t in draft), passages_snapped=snapped,
-                  dropped=dropped,
+                  dropped=dropped, kept_on_recheck=[{k: v for k, v in x.items() if k != "text"} for x in kept],
+                  coherence_repairs=mended,
+                  breaks=[dict(line=f"{turns[j][0]}: {turns[j][1]}", reason=r) for j, r in sorted(left.items())],
                   words=sum(len(t.split()) for _, t in turns), section_faults=sect, line_checks=checked,
                   repairs=repairs, stand_ins=[dict(stand_in=a, line=b, faults=c) for a, b, c in stand_ins],
                   failed_index=sorted(faults),
@@ -1542,11 +1762,14 @@ def check_section(ctx, title, draft, i, n, so_far_lines):
         f"{repairs} lines repaired" + (f", {len(stand_ins)} B lines replaced by a stand-in" if stand_ins else "")
         + (f"; {'; '.join(sect)}" if sect else "")
         + (f"; {len(faults)} lines still faulty" if faults else "")
+        + (f"; {len(kept)} lines still faulty after repair kept on a re-check" if kept else "")
         + (f"; {len(dropped)} lines still faulty after repair dropped" if dropped else "")
+        + (f"; {mended} lines mended to follow on" if mended else "")
+        + (f"; the conversation still breaks at {len(left)} lines" if left else "")
         + ("; checks pass" if not sect and not faults else ""))
     if not sect and not faults:
         keep = {norm_number(x) for _, t in turns for x in re.findall(NUM, t)} & ctx.numbers
-        edited, refused = edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, keep)
+        edited, refused = edit_section(ctx, turns, quotes, bg, so_far_lines, budget, label, keep, accepted)
         result["edit"] = "kept" if edited else f"refused: {refused}"
         if edited:
             result.update(words_before_edit=result["words"], lines_before_edit=len(turns))
@@ -1581,6 +1804,14 @@ def review_sheet(sections_out, model):
         for s in result.get("stand_ins", []):
             out += [f'B line replaced by "{s["stand_in"]}" after failing its checks: "{s["line"]}" '
                     f'({"; ".join(s["faults"])})', ""]
+        for k in result.get("kept_on_recheck", []):
+            out += [f'Kept after failing its checks, since a re-check with thinking passed it: "{k["line"]}" '
+                    f'({"; ".join(k["faults"])}; the re-check: {k["recheck"]})', ""]
+        for d in result.get("dropped", []):
+            out += [f'Dropped after failing its checks: "{d["line"]}" ({"; ".join(d["faults"])}'
+                    + (f'; the re-check: {d["recheck"]}' if d.get("recheck") else "") + ")", ""]
+        for b in result.get("breaks", []):
+            out += [f'The conversation may not follow on at "{b["line"]}": {b["reason"]}', ""]
         if result.get("section_faults"):
             out += ["Faults in this section as a whole: " + "; ".join(result["section_faults"]), ""]
     return "\n".join(out)
